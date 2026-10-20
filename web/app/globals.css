@@ -1,0 +1,272 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #0b0e13;
+  color: #d6d6d6;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
+  height: 100vh;
+  overflow: hidden;
+}
+
+* { box-sizing: border-box; }
+
+/* --- App shell --------------------------------------------------------------
+ * Matched to the sample's top-bar style. Top bar is fixed height; charts fill
+ * the remaining viewport. Bars look identical to the sample so future header
+ * buttons (calendar, toggles, timeframe picker…) can be slotted in later.
+ */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+}
+
+.top-bar {
+  display: flex;
+  align-items: center;
+  height: 42px;
+  flex: 0 0 42px;
+  background: #131722;
+  border-bottom: 1px solid #2a2e39;
+  padding: 0 12px;
+  gap: 8px;
+  user-select: none;
+  z-index: 50;
+}
+
+.header-divider {
+  width: 1px;
+  height: 20px;
+  background: #2a2e39;
+  margin: 0 2px;
+}
+
+/* --- Timeframe picker (top-bar left) -------------------------------------- */
+.tf-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 28px;
+  background: #1c2030;
+  border: 1px solid #2a2e39;
+  border-radius: 4px;
+  padding: 2px;
+}
+.tf-btn {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: #787b87;
+  font: 600 11px/1 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  letter-spacing: 0.04em;
+  padding: 0 8px;
+  height: 100%;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 80ms ease, color 80ms ease;
+}
+.tf-btn:hover {
+  color: #d1d4dc;
+  background: rgba(255, 255, 255, 0.04);
+}
+.tf-btn.active {
+  color: #ffffff;
+  background: #2a2e39;
+}
+.tf-btn:focus-visible {
+  outline: 1px solid #4f8cf7;
+  outline-offset: 1px;
+}
+.top-bar-spacer {
+  flex: 1 1 auto;
+}
+
+/* Main 3-chart grid — sits BELOW the top bar. */
+.page {
+  display: grid;
+  /* Half / half horizontally: big 3m on the left, two 1m stacked on the right. */
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  padding: 4px;
+  background: #0b0e13;
+}
+
+.cell {
+  position: relative;
+  background: #0e1218;
+  border: 1px solid #1a1f29;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+/* --- header row: symbol / venue / tf / EMA chips / price badge ----------- */
+.cell-header {
+  position: absolute;
+  top: 4px;
+  left: 8px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  /* Allow clicks on EMA toggle buttons. */
+  pointer-events: auto;
+}
+.cell-header .symbol { color: #ffffff; }
+.cell-header .venue { color: #787b87; font-weight: 400; }
+.cell-header .tf { color: #ffffff; }
+.cell-header .badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+.cell-header .badge.up { background: rgba(38, 166, 154, 0.15); color: #26a69a; }
+.cell-header .badge.down { background: rgba(239, 83, 80, 0.15); color: #ef5350; }
+
+/* Inline EMA legend chips — match sample: orange (9/50), green (21), pink (200).
+   Now a clickable <button>: toggles that EMA line on/off. The "off" chip is
+   darkened (see Chart.tsx's `darken()`) so the user can see at a glance
+   which EMAs are currently rendered. */
+.ema-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  pointer-events: auto;
+}
+.ema-chip {
+  width: 20px;
+  height: 16px;
+  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: transform 0.08s ease, filter 0.15s ease;
+  font-family: inherit;
+}
+.ema-chip:hover { filter: brightness(1.15); }
+.ema-chip:active { transform: scale(0.92); }
+.ema-chip.off { cursor: pointer; }
+.ema-chip .chip-num { color: inherit; }
+
+/* OHLC hover legend — sits just below the header when the crosshair is on a bar. */
+.ohlc-bar {
+  position: absolute;
+  top: 24px;
+  left: 8px;
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(14, 18, 24, 0.7);
+  border: 1px solid #1a1f29;
+  border-radius: 3px;
+  pointer-events: none;
+}
+.ohlc-bar b { color: #787b87; font-weight: 400; margin-right: 3px; }
+.ohlc-bar .up { color: #26a69a; }
+.ohlc-bar .down { color: #ef5350; }
+
+/* Footer — only the live indicator, hidden by default per request. */
+.cell-footer {
+  position: absolute;
+  bottom: 4px;
+  right: 8px;
+  z-index: 10;
+  font-size: 10px;
+  color: #787b87;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+}
+.cell-footer .ok { color: #26a69a; }
+.cell-footer .muted { color: #787b87; }
+
+/* Right-click context menu — styled to match sample's .context-menu */
+.context-menu {
+  position: fixed;
+  z-index: 10000;
+  background-color: #1e222d;
+  border: 1px solid #2a2e39;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  padding: 4px;
+  width: max-content;
+  backdrop-filter: blur(8px);
+  user-select: none;
+}
+.context-menu-item {
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: #d1d4dc;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 12px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+.context-menu-item:hover {
+  background-color: #2962ff;
+  color: #ffffff;
+}
+.context-menu-item svg { flex-shrink: 0; }
+
+/* Top-bar TZ group: a small "TZ" label + the same tf-pill group. */
+.tz-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tz-label {
+  color: #787b87;
+  font: 600 10px/1 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.tz-pick {
+  height: 26px;
+}
+.tz-pick .tf-btn {
+  font-size: 10px;
+  padding: 0 7px;
+}
+
+/* Global live indicator (top-right, only if used in future). */
+.status {
+  position: fixed;
+  top: 4px;
+  right: 8px;
+  z-index: 100;
+  font-size: 10px;
+  color: #787b87;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.status .dot { width: 6px; height: 6px; border-radius: 50%; background: #26a69a; }
+.status .dot.off { background: #ef5350; }
