@@ -4,13 +4,20 @@ import { useCallback, useRef, useState } from "react";
 import type { ITimeScaleApi, IPriceScaleApi, Time } from "lightweight-charts";
 import Chart from "../components/Chart";
 import TopBar from "../components/TopBar";
-import type { TzOffset } from "../components/Chart";
+import type { TzOffset, Zones, LineToggles } from "../components/Chart";
 
-interface Pdhlm {
-  high: number;
-  low: number;
-  mid: number;
-}
+const ALL_EMAS = [10, 20, 50, 200];
+/** 5m: 50 + 200 on by default; 10 + 20 off. */
+const FIVE_M_EMA_OFF = [10, 20];
+/** 1m: 10 + 20 on by default; 50 + 200 off (too noisy). */
+const ONE_M_EMA_OFF = [50, 200];
+
+const DEFAULT_TOGGLES: LineToggles = {
+  weekly: true,
+  monday: false,
+  pdhlm: true,
+  fibb: false,
+};
 
 export default function Page() {
   // ── Right column: 1m raw (top) + 1m HA (bottom) — sync time & price ────
@@ -27,45 +34,56 @@ export default function Page() {
       oneMinutePriceScales.current.push(api);
   };
 
-  // Global timezone — ONE dropdown at the bottom-right of the whole screen.
   const [tz, setTz] = useState<TzOffset>(8);
-
-  // PDHLM — fetched whenever the TopBar date changes.
-  const [pdhlm, setPdhlm] = useState<Pdhlm | null>(null);
+  const [zones, setZones] = useState<Zones | null>(null);
+  const [toggles, setToggles] = useState<LineToggles>(DEFAULT_TOGGLES);
+  const [customLevels, setCustomLevels] = useState<number[]>([]);
 
   const onDateChange = useCallback(async (date: string) => {
     try {
-      const res = await fetch(`/api/pdhlm/${encodeURIComponent(date)}`);
-      if (!res.ok) { setPdhlm(null); return; }
-      const data = (await res.json()) as Pdhlm;
-      setPdhlm(data);
+      const res = await fetch(`/api/zones/${encodeURIComponent(date)}`);
+      if (!res.ok) { setZones(null); return; }
+      const data = (await res.json()) as Zones;
+      setZones(data);
     } catch {
-      setPdhlm(null);
+      setZones(null);
     }
+  }, []);
+
+  const onToggle = useCallback((key: keyof LineToggles) => {
+    setToggles((prev) => ({ ...prev, [key]: !prev[key] }));
   }, []);
 
   return (
     <>
-      <TopBar onDateChange={onDateChange} />
+      <TopBar
+        onDateChange={onDateChange}
+        toggles={toggles}
+        onToggle={onToggle}
+        onAddCustom={(price) => setCustomLevels((prev) => [...prev, price])}
+        onClearCustom={() => setCustomLevels([])}
+      />
       <main className="page">
-        {/* Top-left: 5m · raw candles */}
         <div className="cell">
           <Chart
             interval="5m"
-            emas={[10, 20, 50, 200]}
-            defaultEmaOff={[50, 200]}
+            emas={ALL_EMAS}
+            defaultEmaOff={FIVE_M_EMA_OFF}
             tz={tz}
-            pdhlm={pdhlm}
+            zones={zones}
+            lineToggles={toggles}
+            customLevels={customLevels}
           />
         </div>
-        {/* Top-right: 1m · raw candles, synced with bottom-right */}
         <div className="cell">
           <Chart
             interval="1m"
-            emas={[10, 20, 50, 200]}
-            defaultEmaOff={[50, 200]}
+            emas={ALL_EMAS}
+            defaultEmaOff={ONE_M_EMA_OFF}
             tz={tz}
-            pdhlm={pdhlm}
+            zones={zones}
+            lineToggles={toggles}
+            customLevels={customLevels}
             registerTimeScale={registerRightTime}
             siblingScales={oneMinuteTimeScales}
             registerPriceScale={registerRightPrice}
@@ -73,25 +91,27 @@ export default function Page() {
             priceScaleLock={rightPriceScaleLock}
           />
         </div>
-        {/* Bottom-left: 3m · Heikin Ashi */}
         <div className="cell">
           <Chart
             interval="3m"
             heikin
-            emas={[10, 20, 50, 200]}
+            emas={ALL_EMAS}
             tz={tz}
-            pdhlm={pdhlm}
+            zones={zones}
+            lineToggles={toggles}
+            customLevels={customLevels}
           />
         </div>
-        {/* Bottom-right: 1m · Heikin Ashi, synced with top-right */}
         <div className="cell">
           <Chart
             interval="1m"
             heikin
-            emas={[10, 20, 50, 200]}
-            defaultEmaOff={[50, 200]}
+            emas={ALL_EMAS}
+            defaultEmaOff={ONE_M_EMA_OFF}
             tz={tz}
-            pdhlm={pdhlm}
+            zones={zones}
+            lineToggles={toggles}
+            customLevels={customLevels}
             registerTimeScale={registerRightTime}
             siblingScales={oneMinuteTimeScales}
             registerPriceScale={registerRightPrice}
@@ -101,7 +121,6 @@ export default function Page() {
         </div>
       </main>
 
-      {/* Single global TZ dropdown — bottom-right of screen, controls all 4 charts */}
       <div className="global-tz-wrapper">
         <select
           className="global-tz-select"

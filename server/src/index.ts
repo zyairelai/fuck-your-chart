@@ -18,7 +18,7 @@ import { fileURLToPath } from "url";
 import cors from "cors";
 import { Server as IOServer } from "socket.io";
 
-import { klines, streamKlines } from "./binance.js";
+import { klines, klinesFutures, klinesPages, streamKlines } from "./binance.js";
 
 const SYMBOL = "btcusdt";
 // Fixed layout: 5m raw (top-left), 3m HA (bottom-left), 1m raw + HA (right).
@@ -47,13 +47,12 @@ const io = new IOServer(server, {
  * either update the open candle (closed=false) or append a new closed candle.
  * This is the only place state lives; clients hold nothing.
  */
-const HISTORY_LIMIT = 500;
+const HISTORY_LIMIT = 50_000;
+const BOOT_PAGES = 10;
 const history = new Map<Interval, unknown[]>();
 
 async function loadHistory() {
-  for (const interval of DEFAULT_INTERVALS) {
-    await loadInterval(interval);
-  }
+  await Promise.all(DEFAULT_INTERVALS.map((interval) => loadInterval(interval)));
   io.emit("history", Object.fromEntries(history));
 }
 
@@ -64,7 +63,7 @@ async function loadInterval(interval: Interval) {
   if (!ALLOWED_INTERVALS.has(interval)) {
     throw new Error(`unsupported interval: ${interval}`);
   }
-  const bars = await klines(SYMBOL, interval, HISTORY_LIMIT);
+  const bars = await klinesPages(SYMBOL, interval, BOOT_PAGES, 1000);
   const last = bars[bars.length - 1] as { closed?: boolean } | undefined;
   if (last && last.closed === false) bars.pop();
   history.set(interval, bars);
@@ -133,40 +132,78 @@ app.post("/api/interval/:name", async (req, res) => {
   }
 });
 
-/**
- * GET /api/pdhlm/:date  — Previous Day High / Low / Mid for BTCUSDT.
- *
- * `date` is the "selected / today" date in YYYY-MM-DD format.
- * We return the H/L/M of the day BEFORE that date (UTC calendar day).
- * The Binance spot 1d kline for a given UTC date opens at 00:00 UTC and
- * closes at 23:59:59 UTC, so we just fetch the candle that opens at
- * midnight UTC of the previous day.
- */
-app.get("/api/pdhlm/:date", async (req, res) => {
+/** Paginated older candles for infinite scroll-back. `endTime` is ms. */
+app.get("/api/klines/:interval", async (req, res) => {
   try {
-    const dateStr = String(req.params.date);
-    // Parse selected date and go back one calendar day.
-    const [y, m, d] = dateStr.split("-").map(Number) as [number, number, number];
-    const selectedMs = Date.UTC(y, m - 1, d, 0, 0, 0);
-    const prevDayOpenMs = selectedMs - 86400_000;
-
-    // Binance 1d kline: startTime=prevDayOpenMs, limit=1
-    const url = `https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&startTime=${prevDayOpenMs}&limit=1`;
-    const r = await fetch(url);
-    if (!r.ok) throw new Error(`Binance 1d kline failed: ${r.status}`);
-    const raw = (await r.json()) as (string | number)[][];
-    if (!raw.length) {
-      res.status(404).json({ error: "no data for previous day" });
+    const interval = String(req.params.interval);
+    if (!ALLOWED_INTERVALS.has(interval)) {
+      res.status(400).json({ error: "unsupported interval" });
       return;
     }
-    const row = raw[0]!;
-    const high = Number(row[2]);
-    const low  = Number(row[3]);
-    const mid  = (high + low) / 2;
-    const prevDateMs = prevDayOpenMs;
-    const pDate = new Date(prevDateMs);
-    const prevDateStr = `${pDate.getUTCFullYear()}-${String(pDate.getUTCMonth()+1).padStart(2,"0")}-${String(pDate.getUTCDate()).padStart(2,"0")}`;
-    res.json({ date: prevDateStr, high, low, mid });
+    const endTime = req.query.endTime != null ? Number(req.query.endTime) : undefined;
+    const limit = Math.min(Number(req.query.limit) || 1000, 1000);
+    const bars = await klines(SYMBOL, interval, limit, endTime);
+    res.json(bars);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+function fibRange(high: number, low: number) {
+  const mid = (high + low) / 2;
+  // Same odd-integer nudge as zones.py so 75%/25% match the CLI.
+  let sumHM = high + mid;
+  if (Number.isInteger(sumHM) && sumHM % 2 !== 0) sumHM += 1;
+  let sumLM = low + mid;
+  if (Number.isInteger(sumLM) && sumLM % 2 !== 0) sumLM -= 1;
+  return { high, low, mid, p75: sumHM / 2, p25: sumLM / 2 };
+}
+
+function barAt(bars: { time: number; high: number; low: number }[], openSec: number) {
+  return bars.find((b) => b.time === openSec)
+    ?? [...bars].reverse().find((b) => b.time <= openSec);
+}
+
+/**
+ * GET /api/zones/:date
+ *
+ * Calendar date is ONLY the reference day for drawing horizontal levels.
+ * Day boundaries are UTC 00:00 (Binance 1d/1w candles), not UTC+8.
+ * OHLC comes from USDT-M futures — same as zones.py.
+ */
+app.get("/api/zones/:date", async (req, res) => {
+  try {
+    const dateStr = String(req.params.date);
+    const [y, m, d] = dateStr.split("-").map(Number) as [number, number, number];
+    if (!y || !m || !d) {
+      res.status(400).json({ error: "date must be YYYY-MM-DD" });
+      return;
+    }
+    const todayOpenMs = Date.UTC(y, m - 1, d, 0, 0, 0, 0);
+    const todayOpenSec = Math.floor(todayOpenMs / 1000);
+    const endMs = Date.UTC(y, m - 1, d, 23, 59, 59, 999);
+
+    const [daily, weekly] = await Promise.all([
+      klinesFutures(SYMBOL, "1d", 20, endMs),
+      klinesFutures(SYMBOL, "1w", 8, endMs),
+    ]);
+
+    const refDow = new Date(todayOpenMs).getUTCDay(); // 0=Sun, 1=Mon, 5=Fri
+    const prevDayOpenSec = refDow === 1
+      ? todayOpenSec - 3 * 86400 // Monday → Friday
+      : todayOpenSec - 86400;
+    const prevSrc = barAt(daily, prevDayOpenSec);
+    const prevDay = prevSrc ? fibRange(prevSrc.high, prevSrc.low) : null;
+
+    const daysSinceMon = (refDow + 6) % 7;
+    const weekStartSec = todayOpenSec - daysSinceMon * 86400;
+    const mondaySrc = barAt(daily, weekStartSec);
+    const monday = mondaySrc ? { high: mondaySrc.high, low: mondaySrc.low } : null;
+
+    const prevWeekSrc = barAt(weekly, weekStartSec - 7 * 86400);
+    const prevWeek = prevWeekSrc ? { high: prevWeekSrc.high, low: prevWeekSrc.low } : null;
+
+    res.json({ date: dateStr, prevWeek, monday, prevDay });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }

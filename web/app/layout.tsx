@@ -1,8 +1,8 @@
 import "./globals.css";
 
 export const metadata = {
-  title: "fuck-your-chart",
-  description: "Three live BTCUSDT futures charts. That's it.",
+  title: "BTC fuck-your-chart",
+  description: "Live BTCUSDT futures charts.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

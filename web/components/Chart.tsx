@@ -15,6 +15,13 @@ import {
   type Time,
 } from "lightweight-charts";
 import { io, Socket } from "socket.io-client";
+import {
+  seedHistory,
+  applyLiveKline,
+  getHistory,
+  loadOlderHistory,
+  subscribeHistory,
+} from "../lib/historyStore";
 
 /** Mirror the server's Kline shape. */
 interface Kline {
@@ -88,6 +95,50 @@ const EMA_LINE_WIDTH: Record<number, number> = {
   200: 3.5,
 };
 
+/** Default zoom: ~9px per bar so candles stay readable (CoinGlass-like).
+ *  Visible bar count then follows pane width instead of stuffing 500 bars in. */
+const TARGET_BAR_SPACING = 9;
+/** Tiny extra pad after the last *future* whitespace bar. */
+const RIGHT_GAP_BARS = 2;
+
+const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const DAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function intervalSeconds(interval: string): number {
+  const m = /^(\d+)([mhd])$/i.exec(interval);
+  if (!m) return 60;
+  const n = Number(m[1]);
+  const u = m[2]!.toLowerCase();
+  if (u === "m") return n * 60;
+  if (u === "h") return n * 3600;
+  return n * 86400;
+}
+
+/** Empty future window: 4 hours so 16:00 still covers 19:00–20:00 on every TF. */
+function futureBarCount(interval: string): number {
+  return Math.max(1, Math.ceil((4 * 3600) / intervalSeconds(interval)));
+}
+
+/** Snap level prices to 0.0 / 0.5 / 1.0 (0.45 → 0.5). */
+function roundHalf(n: number): number {
+  return Math.round(n * 2) / 2;
+}
+
+function futureWhitespace(lastTime: number, interval: string): { time: Time }[] {
+  const step = intervalSeconds(interval);
+  const n = futureBarCount(interval);
+  const out: { time: Time }[] = [];
+  for (let i = 1; i <= n; i++) {
+    out.push({ time: (lastTime + i * step) as Time });
+  }
+  return out;
+}
+
+/** Default zoom — matched to CoinGlass: fat, readable candles with the
+ *  latest bar near the right edge. Reset uses the same numbers. */
+const DEFAULT_BAR_SPACING = 9;
+const DEFAULT_RIGHT_OFFSET = 6;
+
 /** Darken an `#rrggbb` colour by mixing it with the dark cell background. */
 function darken(hex: string, mix = 0.7): string {
   const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
@@ -113,13 +164,44 @@ function fmtTime(t: number, tz: TzOffset): string {
   return `${h}:${m}`;
 }
 
+/** Crosshair time label: "Sat 24 Oct 15:50" in the selected TZ — no year.
+ *  LWC's default uses UTC and "24 Oct '26", which is why the hover showed 07:50. */
+function fmtCrosshairTime(t: Time, tz: TzOffset): string {
+  const epoch = t as number;
+  const d = new Date((epoch + tz * 3600) * 1000);
+  const dow = DAY[d.getUTCDay()] ?? "";
+  const day = d.getUTCDate();
+  const mon = MONTH[d.getUTCMonth()] ?? "";
+  return `${dow} ${day} ${mon} ${fmtTime(epoch, tz)}`;
+}
+
+function makeLocalization(tz: TzOffset) {
+  return {
+    timeFormatter: (t: Time) => fmtCrosshairTime(t, tz),
+    priceFormatter: (price: number) => price.toFixed(1),
+  };
+}
+
+const PRICE_FORMAT = {
+  type: "price" as const,
+  precision: 1,
+  minMove: 0.1,
+};
+
+function setTabTitle(price: number) {
+  const s = price.toLocaleString("en-US", {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  });
+  document.title = `$${s} BTC fuck-your-chart`;
+}
+
 /** Format HH:mm for axis tick marks. Each call remembers the previously
  *  formatted tick's day-of-week so we can prefix "Mon ", "Tue ", ... on the
  *  first tick of a new calendar day (in the chosen timezone). This mirrors
  *  the day-label rendering used by TradingView's chart axis. */
 function makeTickFormatter(tz: TzOffset): (t: Time) => string {
   let prevDay = -1;
-  const DAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   return (t: Time) => {
     const epoch = t as number;
     const d = new Date((epoch + tz * 3600) * 1000);
@@ -133,6 +215,19 @@ function makeTickFormatter(tz: TzOffset): (t: Time) => string {
   };
 }
 
+export interface Zones {
+  prevWeek: { high: number; low: number } | null;
+  monday: { high: number; low: number } | null;
+  prevDay: { high: number; low: number; mid: number; p25: number; p75: number } | null;
+}
+
+export interface LineToggles {
+  weekly: boolean;
+  monday: boolean;
+  pdhlm: boolean;
+  fibb: boolean;
+}
+
 interface Props {
   /** Timeframe string from Binance ("1m", "3m", "5m"). */
   interval: string;
@@ -142,8 +237,10 @@ interface Props {
   defaultEmaOff?: number[];
   /** Display timezone offset (hours). Shared global state from page. */
   tz?: TzOffset;
-  /** Previous Day H/L/M — drawn as price lines on this chart. */
-  pdhlm?: { high: number; low: number; mid: number } | null;
+  /** Horizontal levels from the calendar date (does not move the chart). */
+  zones?: Zones | null;
+  lineToggles?: LineToggles;
+  customLevels?: number[];
   /** Register this chart's time scale so siblings can mirror zoom/pan. */
   registerTimeScale?: (api: ITimeScaleApi<Time> | null) => void;
   siblingScales?: React.MutableRefObject<ITimeScaleApi<Time>[]>;
@@ -161,7 +258,9 @@ export default function Chart({
   emas = [],
   defaultEmaOff = [],
   tz = 0,
-  pdhlm = null,
+  zones = null,
+  lineToggles = { weekly: true, monday: false, pdhlm: true, fibb: false },
+  customLevels = [],
   registerTimeScale,
   siblingScales,
   registerPriceScale,
@@ -171,12 +270,18 @@ export default function Chart({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  /** Invisible future timestamps so the axis labels 16:00→20:00 without
+   *  sitting on the candle series (LWC update() can only touch the last point). */
+  const futureRef = useRef<ISeriesApi<"Line"> | null>(null);
   const emaRefs = useRef<ISeriesApi<"Line">[]>([]);
   const rightScaleRef = useRef<IPriceScaleApi | null>(null);
   const cacheRef = useRef<Kline[]>([]);
-  /** PDHLM price line handles - cleared/redrawn when pdhlm prop changes. */
+  /** Bars currently drawn on the candle series (raw or Heikin Ashi). EMA
+   *  and the OHLC hover legend both read this so they track the chart. */
+  const displayCacheRef = useRef<Kline[]>([]);
+  /** Zone price-line handles — redrawn when calendar date or toggles change. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const pdhlmLinesRef = useRef<any[]>([]);
+  const zoneLinesRef = useRef<any[]>([]);
   /**
    * Heikin Ashi rolling state — two slots:
    *
@@ -198,7 +303,10 @@ export default function Chart({
   /** True while the user's visible range covers the latest bar. When the user
    *  drags left into history we set this to false and stop auto-following. */
   const pinnedToRightRef = useRef(true);
+  /** Skip 1m sibling range copies while we are still placing the default view. */
+  const suppressTimeSyncRef = useRef(true);
   const [status, setStatus] = useState<"connecting" | "live" | "off">("connecting");
+  const [chartReady, setChartReady] = useState(false);
   const [lastPrice, setLastPrice] = useState<number | null>(null);
   const [change, setChange] = useState<number | null>(null);
 
@@ -228,6 +336,8 @@ export default function Chart({
     }
     return s;
   });
+  const emaEnabledRef = useRef(emaEnabled);
+  emaEnabledRef.current = emaEnabled;
 
   /** Keep `emaEnabled` in sync if `emas` ever changes. */
   useEffect(() => {
@@ -240,16 +350,18 @@ export default function Chart({
     });
   }, [emas, defaultEmaOff]);
 
-  /** (Re)compute every EMA line series from the current cached bars. */
-  const recomputeEmas = (bars: Kline[]) => {
-    cacheRef.current = bars.slice();
+  /** Candle series the user actually sees — raw OHLC or Heikin Ashi. */
+  const displayedBars = (raw: Kline[]): Kline[] => (heikin ? toHeikin(raw) : raw);
+
+  /** Paint every EMA from the displayed series close (raw or HA). */
+  const paintEmas = (bars: Kline[]) => {
     const values = bars.map((b) => b.close);
+    const enabled = emaEnabledRef.current;
     for (let i = 0; i < emas.length; i++) {
       const period = emas[i]!;
       const line = emaRefs.current[i];
       if (!line) continue;
-      if (!emaEnabled.has(period)) {
-        // Off: clear the line so nothing is drawn.
+      if (!enabled.has(period)) {
         line.setData([]);
         continue;
       }
@@ -257,6 +369,14 @@ export default function Chart({
       const data = smoothed.map((v, j) => ({ time: bars[j]!.time as Time, value: v }));
       line.setData(data);
     }
+  };
+
+  /** (Re)compute every EMA line series from the current cached RAW bars. */
+  const recomputeEmas = (raw: Kline[]) => {
+    cacheRef.current = raw.slice();
+    const bars = displayedBars(raw);
+    displayCacheRef.current = bars;
+    paintEmas(bars);
   };
 
   /** Toggle a single EMA on/off (line series visibility + chip darken). */
@@ -271,6 +391,7 @@ export default function Chart({
         next.add(period);
         isNowOn = true;
       }
+      emaEnabledRef.current = next;
       const idx = emas.indexOf(period);
       const line = idx >= 0 ? emaRefs.current[idx] : undefined;
       if (line) {
@@ -279,12 +400,13 @@ export default function Chart({
         if (!isNowOn) {
           line.setData([]);
         } else {
-          // Re-feed data so it lights up immediately.
-          const cached = cacheRef.current;
-          if (cached.length > 0) {
-            const values = cached.map((b) => b.close);
+          const bars = displayCacheRef.current.length > 0
+            ? displayCacheRef.current
+            : displayedBars(cacheRef.current);
+          if (bars.length > 0) {
+            const values = bars.map((b) => b.close);
             const smoothed = ema(values, period);
-            const data = smoothed.map((v, j) => ({ time: cached[j]!.time as Time, value: v }));
+            const data = smoothed.map((v, j) => ({ time: bars[j]!.time as Time, value: v }));
             line.setData(data);
           }
         }
@@ -293,12 +415,46 @@ export default function Chart({
     });
   };
 
-  /** Reset BOTH axes — canonical "Reset price scale" / "Reset chart view". */
-  const resetView = () => {
+  /** CoinGlass-style default: fat enough candles, latest bar on the right.
+   *  Used on first history load, first real layout, and right-click reset.
+   *  Never fitContent() — that crams all 500 bars into the pane. */
+  const applyDefaultView = () => {
     const c = chartRef.current;
     if (!c) return;
+    if (cacheRef.current.length === 0) return;
+    const el = containerRef.current;
+    const w = el?.clientWidth ?? 0;
+    const h = el?.clientHeight ?? 0;
+    if (w < 40 || h < 40) return;
+
+    suppressTimeSyncRef.current = true;
+    pinnedToRightRef.current = true;
+    const ts = c.timeScale();
+    ts.applyOptions({
+      barSpacing: TARGET_BAR_SPACING,
+      rightOffset: RIGHT_GAP_BARS,
+    });
+    // Pin the live candle near the right. Do NOT scrollToRealTime() — that
+    // would jump to the dummy future series (~4h of empty).
+    const total = cacheRef.current.length;
+    const slots = Math.max(40, Math.floor((w - 70) / TARGET_BAR_SPACING));
+    const futureSlots = Math.min(
+      futureBarCount(interval),
+      Math.max(24, Math.floor(slots * 0.3)),
+    );
+    ts.setVisibleLogicalRange({
+      from: Math.max(0, total - (slots - futureSlots)),
+      to: total + futureSlots,
+    });
     rightScaleRef.current?.setAutoScale(true);
-    c.timeScale().fitContent();
+    requestAnimationFrame(() => {
+      suppressTimeSyncRef.current = false;
+    });
+  };
+
+  /** Reset BOTH axes — same framing as first load, not fit-to-all-history. */
+  const resetView = () => {
+    applyDefaultView();
   };
 
   // --- chart bootstrap (once per mount) ------------------------------------
@@ -325,6 +481,7 @@ export default function Chart({
         vertLine: { color: "#787b86", width: 1, style: 1, labelBackgroundColor: "#2a2e39" },
         horzLine: { color: "#787b86", width: 1, style: 1, labelBackgroundColor: "#2a2e39" },
       },
+      localization: makeLocalization(tz),
       rightPriceScale: {
         borderColor: "#2a2e39",
         autoScale: true,
@@ -337,9 +494,11 @@ export default function Chart({
         // re-tick every second on live 1m updates (which was making the labels
         // shift sideways visually). HH:MM resolution is plenty.
         secondsVisible: false,
-        rightOffset: 12,
-        barSpacing: 6,
-        fixLeftEdge: true,
+        rightOffset: RIGHT_GAP_BARS,
+        barSpacing: TARGET_BAR_SPACING,
+        // Keep the left edge free so a 0-width mount → real size doesn't pin
+        // the first bar to the left and leave a huge empty gap on the right.
+        fixLeftEdge: false,
         fixRightEdge: false,
         tickMarkFormatter: makeTickFormatter(tz),
       },
@@ -357,6 +516,7 @@ export default function Chart({
       autoSize: true,
     });
     chartRef.current = chart;
+    setChartReady(true);
 
     // Default right price scale (used by every series on this chart).
     const right = chart.priceScale("right");
@@ -369,11 +529,22 @@ export default function Chart({
       wickUpColor: "#26a69a",
       wickDownColor: "#ef5350",
       borderVisible: false,
-      // Show current price label on right axis + dotted price line.
       priceLineVisible: true,
       lastValueVisible: true,
+      priceFormat: PRICE_FORMAT,
     });
     candleRef.current = candle;
+
+    const futureLine = chart.addSeries(LineSeries, {
+      color: "rgba(0,0,0,0)",
+      lineVisible: false,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+      pointMarkersVisible: false,
+      priceFormat: PRICE_FORMAT,
+    });
+    futureRef.current = futureLine;
 
     // EMA line series — solid, no dots/point markers.
     const refs: ISeriesApi<"Line">[] = emas.map((period) => {
@@ -387,6 +558,7 @@ export default function Chart({
         pointMarkersVisible: false,
         priceLineVisible: false,
         lastValueVisible: false,
+        priceFormat: PRICE_FORMAT,
         crosshairMarkerVisible: false,
       });
       return line;
@@ -398,6 +570,8 @@ export default function Chart({
     let tOriginating = false;
     const onTimeRange = () => {
       if (tOriginating) return;
+      if (suppressTimeSyncRef.current) return;
+      if (cacheRef.current.length === 0) return;
       tOriginating = true;
       try {
         const siblings = siblingScales?.current ?? [];
@@ -405,10 +579,11 @@ export default function Chart({
         const range = ts.getVisibleLogicalRange();
         if (!range) return;
         const cached = cacheRef.current;
-        if (cached.length > 0) {
-          const totalBars = cached.length + 12;
-          const distFromRight = totalBars - range.to;
-          pinnedToRightRef.current = distFromRight < 3;
+        const totalBars = cached.length + futureBarCount(interval) + RIGHT_GAP_BARS;
+        const distFromRight = totalBars - range.to;
+        pinnedToRightRef.current = distFromRight < 3;
+        if (range.from < 30) {
+          void loadOlderHistory(interval);
         }
         for (const sib of siblings) {
           if (sib && sib !== ts) sib.setVisibleLogicalRange(range);
@@ -462,7 +637,12 @@ export default function Chart({
         return;
       }
       const t = p.time as number;
-      const cached = cacheRef.current;
+      const cached = displayCacheRef.current;
+      const lastReal = cached.length > 0 ? cached[cached.length - 1]!.time : 0;
+      if (lastReal > 0 && t > lastReal) {
+        setHover(null);
+        return;
+      }
       let found: Kline | undefined;
       for (let i = cached.length - 1; i >= 0; i--) {
         const b = cached[i]!;
@@ -497,41 +677,18 @@ export default function Chart({
     };
     el?.addEventListener("contextmenu", onContext);
 
-    // Watch for first real size arrival. autoSize:true keeps the chart in
-    // step with container changes, but it doesn't auto-call fitContent() —
-    // if we fit when the container was 0px wide (initial mount), the
-    // logical range gets locked to one bar and every tick keeps it stuck.
-    // Re-fit once we transition from 0 -> real width.
+    // Place the default view once the cell has a real size AND history is in.
+    // Do not fitContent() on an empty/0-width chart — that is what left the
+    // 1m panes stuck on the left with a huge empty gap.
     const ro = new ResizeObserver(() => {
       if (!chartRef.current) return;
       const w = el?.clientWidth ?? 0;
-      if (w > 0) {
-        positionInitialView();
+      const h = el?.clientHeight ?? 0;
+      if (w > 40 && h > 40 && cacheRef.current.length > 0) {
+        applyDefaultView();
         ro.disconnect();
       }
     });
-
-    // positionInitialView — called once the container has a real width.
-    // Instead of fitContent() (which compresses 500 bars into a tiny cell),
-    // we show the last INITIAL_BARS bars with a comfortable right gap.
-    // This gives a clean first impression regardless of timeframe.
-    const INITIAL_BARS = 150;
-    const positionInitialView = () => {
-      const c = chartRef.current;
-      if (!c) return;
-      const cached = cacheRef.current;
-      // Use cached length if history has already arrived; otherwise let
-      // fitContent handle it (history will reposition once it loads).
-      if (cached.length === 0) {
-        c.timeScale().fitContent();
-        return;
-      }
-      const total = cached.length;
-      c.timeScale().setVisibleLogicalRange({
-        from: Math.max(0, total - INITIAL_BARS),
-        to: total + 10, // 10-bar right gap so live candle has breathing room
-      });
-    };
 
     if (el) ro.observe(el);
 
@@ -539,10 +696,21 @@ export default function Chart({
       if (rafId) cancelAnimationFrame(rafId);
       ro.disconnect();
       el?.removeEventListener("contextmenu", onContext);
+      const sibs = siblingScales?.current;
+      if (sibs) {
+        const i = sibs.indexOf(ts);
+        if (i >= 0) sibs.splice(i, 1);
+      }
+      const prices = siblingPriceScales?.current;
+      if (prices) {
+        const i = prices.indexOf(right);
+        if (i >= 0) prices.splice(i, 1);
+      }
       registerTimeScale?.(null);
       registerPriceScale?.(null);
       chart.remove();
       chartRef.current = null;
+      setChartReady(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -554,52 +722,63 @@ export default function Chart({
     if (!chartRef.current) return;
     chartRef.current.applyOptions({
       timeScale: { tickMarkFormatter: makeTickFormatter(tz) },
+      localization: makeLocalization(tz),
     });
   }, [tz]);
 
-  // Draw PDHLM price lines whenever the prop changes.
-  // High + Low: thick solid white. Mid: dashed semi-transparent white.
+  // Horizontal levels from zones.py — calendar date is the reference day only.
+  // Purple thick = Prev 1W H/L. Blue thick = this week's Monday H/L.
+  // White thick = PDH/PDL. White dash = Prev 1D mid.
   useEffect(() => {
     const series = candleRef.current;
     if (!series) return;
-    // Remove old lines.
-    for (const pl of pdhlmLinesRef.current) {
+    for (const pl of zoneLinesRef.current) {
       try { series.removePriceLine(pl); } catch (_) { /* already removed */ }
     }
-    pdhlmLinesRef.current = [];
-    if (!pdhlm) return;
-    const { high, low, mid } = pdhlm;
-    pdhlmLinesRef.current.push(
-      series.createPriceLine({
-        price: high,
-        color: "#ffffff",
-        lineWidth: 2,
-        lineStyle: LineStyle.Solid,
-        axisLabelVisible: true,
-        title: "PDH",
-      })
-    );
-    pdhlmLinesRef.current.push(
-      series.createPriceLine({
-        price: mid,
-        color: "rgba(255,255,255,0.55)",
-        lineWidth: 1,
-        lineStyle: LineStyle.Dashed,
-        axisLabelVisible: true,
-        title: "PDM",
-      })
-    );
-    pdhlmLinesRef.current.push(
-      series.createPriceLine({
-        price: low,
-        color: "#ffffff",
-        lineWidth: 2,
-        lineStyle: LineStyle.Solid,
-        axisLabelVisible: true,
-        title: "PDL",
-      })
-    );
-  }, [pdhlm]);
+    zoneLinesRef.current = [];
+    if (!zones) return;
+
+    const add = (
+      price: number,
+      color: string,
+      width: 1 | 2 | 3 | 4,
+      style: LineStyle,
+      title: string,
+    ) => {
+      zoneLinesRef.current.push(
+        series.createPriceLine({
+          price: roundHalf(price),
+          color,
+          lineWidth: width,
+          lineStyle: style,
+          axisLabelVisible: true,
+          title,
+        }),
+      );
+    };
+
+    if (lineToggles.weekly && zones.prevWeek) {
+      add(zones.prevWeek.high, "#ce93d8", 2, LineStyle.Solid, "PWH");
+      add(zones.prevWeek.low, "#ce93d8", 2, LineStyle.Solid, "PWL");
+    }
+    if (lineToggles.monday && zones.monday) {
+      add(zones.monday.high, "#42a5f5", 2, LineStyle.Solid, "MH");
+      add(zones.monday.low, "#42a5f5", 2, LineStyle.Solid, "ML");
+    }
+    if (lineToggles.pdhlm && zones.prevDay) {
+      add(zones.prevDay.high, "#ffffff", 2, LineStyle.Solid, "PDH");
+      add(zones.prevDay.mid, "rgba(255,255,255,0.85)", 2, LineStyle.Dashed, "PDM");
+      add(zones.prevDay.low, "#ffffff", 2, LineStyle.Solid, "PDL");
+    }
+    if (lineToggles.fibb && zones.prevDay) {
+      add(zones.prevDay.p75, "#ffeb3b", 2, LineStyle.Dotted, "75%");
+      add(zones.prevDay.p25, "#ffeb3b", 2, LineStyle.Dotted, "25%");
+    }
+    for (let i = 0; i < customLevels.length; i++) {
+      const px = customLevels[i]!;
+      add(px, "#ffeb3b", 3, LineStyle.Solid, `C${i + 1}`);
+    }
+  }, [zones, lineToggles, customLevels, chartReady]);
 
   // --- socket: history + live updates --------------------------------------
   useEffect(() => {
@@ -612,6 +791,7 @@ export default function Chart({
     sock.on("history", (payload: Record<string, Kline[]>) => {
       const raw = payload[interval];
       if (!raw || !candleRef.current) return;
+      seedHistory(interval, raw);
       const series = heikin ? toHeikin(raw) : raw;
 
       if (heikin && series.length > 0) {
@@ -626,32 +806,26 @@ export default function Chart({
         lastClosedHaRef.current = null;
       }
 
+      // Candles only — future times live on `futureRef` so live `update()`
+      // can still mutate the last real bar.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       candleRef.current.setData(series as any);
-      if (raw.length > 0) {
-        const first = raw[0]!.open;
+      displayCacheRef.current = series;
+      if (series.length > 0) {
         const lastBar = series[series.length - 1]!;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        futureRef.current?.setData(futureWhitespace(lastBar.time, interval) as any);
         setLastPrice(lastBar.close);
+        if (interval === "1m" && !heikin) setTabTitle(lastBar.close);
+        const first = raw[0]!.open;
         setChange(first === 0 ? 0 : ((lastBar.close - first) / first) * 100);
-        // Cache the RAW bars so EMA and HA derivations stay consistent.
         recomputeEmas(raw);
       }
-      // Position the view: show the last 150 bars with a right gap.
-      // Works for every interval (1m, 3m, 5m…) regardless of bar count.
-      if (chartRef.current) {
-        const el = containerRef.current;
-        const w = el?.clientWidth ?? 0;
-        if (w > 0) {
-          // Container already has real size — position immediately.
-          const total = raw.length;
-          chartRef.current.timeScale().setVisibleLogicalRange({
-            from: Math.max(0, total - 150),
-            to: total + 10,
-          });
-        }
-        // If container is still 0-width the ResizeObserver will call
-        // positionInitialView once it gets a real size.
-      }
+      // Frame the latest candles after layout. Two rAFs wait for autoSize to
+      // pick up the cell's real width (0-width mount otherwise looks empty).
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => applyDefaultView());
+      });
     });
 
     sock.on("kline", (msg: { interval: string; k: Kline }) => {
@@ -687,6 +861,7 @@ export default function Chart({
         // Replace the last (still-open) bar in-place.
         cached[cached.length - 1] = bar;
       }
+      applyLiveKline(interval, bar);
       // If timeSec < prevTime (out-of-order / duplicate), silently ignore.
 
       // ── Heikin Ashi computation ───────────────────────────────────────────
@@ -716,19 +891,27 @@ export default function Chart({
       // ── Series update ─────────────────────────────────────────────────────
       // series.update() with the same timestamp overwrites the bar in-place;
       // a greater timestamp appends a new bar to the right.
+      // Last point on the candle series is the live bar, so update() applies.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       candleRef.current.update(candlePayload as any);
+      if (isNewBar && futureRef.current) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        futureRef.current.setData(futureWhitespace(timeSec, interval) as any);
+      }
 
       setLastPrice(candlePayload.close);
+      if (interval === "1m" && !heikin) setTabTitle(bar.close);
 
-      // ── EMA update ───────────────────────────────────────────────────────
-      if (cached.length > 0 && emas.length > 0) {
+      // ── EMA update (from the displayed close: raw or Heikin Ashi) ────────
+      const displayed = heikin ? toHeikin(cached) : cached;
+      displayCacheRef.current = displayed;
+      if (displayed.length > 0 && emas.length > 0) {
+        const values = displayed.map((c) => c.close);
         for (let i = 0; i < emas.length; i++) {
           const period = emas[i]!;
           const line = emaRefs.current[i];
           if (!line) continue;
-          if (!emaEnabled.has(period)) continue;
-          const values = cached.map((c) => c.close);
+          if (!emaEnabledRef.current.has(period)) continue;
           const smoothed = ema(values, period);
           const tail = smoothed[smoothed.length - 1];
           if (typeof tail === "number") {
@@ -756,6 +939,48 @@ export default function Chart({
       sock.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interval, heikin]);
+
+  // Older history prepended (this pane or a sibling 1m pane). Rebuild the
+  // series and shift the visible range by the new bar count so the view
+  // does not jump.
+  useEffect(() => {
+    return subscribeHistory(interval, (ev) => {
+      if (ev.reason !== "prepend" || ev.prepended <= 0) return;
+      const raw = getHistory(interval);
+      if (!candleRef.current || !chartRef.current || raw.length === 0) return;
+      if (cacheRef.current[0]?.time === raw[0]?.time) return;
+
+      suppressTimeSyncRef.current = true;
+      const ts = chartRef.current.timeScale();
+      const range = ts.getVisibleLogicalRange();
+      cacheRef.current = raw.slice();
+      const series = heikin ? toHeikin(raw) : raw;
+      displayCacheRef.current = series;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      candleRef.current.setData(series as any);
+      if (series.length > 0) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        futureRef.current?.setData(
+          futureWhitespace(series[series.length - 1]!.time, interval) as any,
+        );
+      }
+      paintEmas(series);
+      if (heikin && series.length > 0) {
+        const closed = [...series].reverse().find((b) => b.closed) ?? series[series.length - 1]!;
+        lastHaRef.current = { open: closed.open, close: closed.close };
+        lastClosedHaRef.current = { open: closed.open, close: closed.close };
+      }
+      if (range) {
+        ts.setVisibleLogicalRange({
+          from: range.from + ev.prepended,
+          to: range.to + ev.prepended,
+        });
+      }
+      requestAnimationFrame(() => {
+        suppressTimeSyncRef.current = false;
+      });
+    });
   }, [interval, heikin]);
 
   const fmt = (n: number | null) =>
@@ -793,32 +1018,34 @@ export default function Chart({
           cell (3m and both 1m charts). */}
       <div className="cell-header">
         <span className="symbol">BTCUSDT</span>
-        <span className="venue">Binance · Futures</span>
+        <span className="venue">Binance Futures</span>
         <span className="tf">
           {interval}
           {heikin ? " · Heikin Ashi" : ""}
         </span>
         <div className="ema-group">{emaLegend}</div>
+        {hover && (
+          <div className="ohlc-bar">
+            <span><b>O</b> {fmt(hover.open)}</span>
+            <span><b>H</b> {fmt(hover.high)}</span>
+            <span><b>L</b> {fmt(hover.low)}</span>
+            <span><b>C</b> {fmt(hover.close)}</span>
+            <span className={hover.change >= 0 ? "up" : "down"}>
+              {hover.change >= 0 ? "+" : ""}
+              {hover.change.toFixed(2)}%
+            </span>
+          </div>
+        )}
       </div>
-
-      {/* OHLC hover legend — TradingView style. Now shown on every cell. */}
-      {hover && (
-        <div className="ohlc-bar">
-          <span><b>O</b> {fmt(hover.open)}</span>
-          <span><b>H</b> {fmt(hover.high)}</span>
-          <span><b>L</b> {fmt(hover.low)}</span>
-          <span><b>C</b> {fmt(hover.close)}</span>
-          <span className={hover.change >= 0 ? "up" : "down"}>
-            {hover.change >= 0 ? "+" : ""}
-            {hover.change.toFixed(2)}%
-          </span>
-        </div>
-      )}
 
       {/* Footer removed: no live label, no TZ dropdown per chart.
           TZ is controlled by the single global dropdown (bottom-right of screen). */}
 
-      <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+      <div
+        ref={containerRef}
+        className="chart-canvas"
+        style={{ width: "100%", height: "100%", cursor: "crosshair" }}
+      />
 
       {/* Right-click context menu — "Reset price scale". */}
       {contextMenu && (

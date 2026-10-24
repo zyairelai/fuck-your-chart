@@ -14,6 +14,7 @@
 import WebSocket from "ws";
 
 export const SPOT_REST = "https://api.binance.com";
+export const FAPI_REST = "https://fapi.binance.com";
 export const SPOT_WS = "wss://stream.binance.com:9443";
 
 /** A candle in lightweight-charts-friendly shape (UTC seconds). */
@@ -57,18 +58,73 @@ function parseKline(raw: (string | number)[]): Kline {
  * describe the same market. The spot–perp basis for BTC is < 1 bp at any
  * given moment, so the chart is visually indistinguishable from a perp view.
  */
-export async function klines(
+async function fetchKlines(
+  urlBase: string,
   symbol: string,
   interval: string,
   limit = 500,
+  endTimeMs?: number,
 ): Promise<Kline[]> {
-  const url = `${SPOT_REST}/api/v3/klines?symbol=${symbol.toUpperCase()}&interval=${interval}&limit=${limit}`;
+  const params = new URLSearchParams({
+    symbol: symbol.toUpperCase(),
+    interval,
+    limit: String(Math.min(Math.max(limit, 1), 1000)),
+  });
+  if (endTimeMs != null && Number.isFinite(endTimeMs)) {
+    params.set("endTime", String(Math.floor(endTimeMs)));
+  }
+  const url = `${urlBase}?${params.toString()}`;
   const res = await fetch(url);
   if (!res.ok) {
     throw new Error(`binance klines ${symbol} ${interval} failed: ${res.status}`);
   }
   const raw = (await res.json()) as (string | number)[][];
   return raw.map((row) => parseKline(row));
+}
+
+export async function klines(
+  symbol: string,
+  interval: string,
+  limit = 500,
+  endTimeMs?: number,
+): Promise<Kline[]> {
+  return fetchKlines(`${SPOT_REST}/api/v3/klines`, symbol, interval, limit, endTimeMs);
+}
+
+/** Futures perp OHLC — same source as zones.py (fapi.binance.com). */
+export async function klinesFutures(
+  symbol: string,
+  interval: string,
+  limit = 500,
+  endTimeMs?: number,
+): Promise<Kline[]> {
+  return fetchKlines(`${FAPI_REST}/fapi/v1/klines`, symbol, interval, limit, endTimeMs);
+}
+
+/** Walk backwards `pages` times (Binance max 1000/page) so boot has a deep buffer. */
+export async function klinesPages(
+  symbol: string,
+  interval: string,
+  pages = 10,
+  pageSize = 1000,
+): Promise<Kline[]> {
+  let bars: Kline[] = [];
+  let endTime: number | undefined;
+  for (let i = 0; i < pages; i++) {
+    const page = await klines(symbol, interval, pageSize, endTime);
+    if (page.length === 0) break;
+    if (bars.length === 0) {
+      bars = page;
+    } else {
+      const first = bars[0]!.time;
+      const older = page.filter((b) => b.time < first);
+      if (older.length === 0) break;
+      bars = [...older, ...bars];
+    }
+    endTime = bars[0]!.time * 1000 - 1;
+    if (page.length < pageSize) break;
+  }
+  return bars;
 }
 
 /**

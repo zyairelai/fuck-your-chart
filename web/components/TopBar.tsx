@@ -3,10 +3,12 @@
 /**
  * Top bar — date stepper + calendar modal (ported from bitcoin-history).
  * < DATE > arrows step the selected date by one trading day.
- * The selected date is used by the page to fetch PDHLM price lines.
+ * The selected date is the reference day for drawing horizontal levels.
+ * It does not freeze or jump the live chart period.
  */
 
 import React, { useEffect, useRef, useState } from "react";
+import type { LineToggles } from "./Chart";
 
 const MONTH_NAMES = [
   "January","February","March","April","May","June",
@@ -41,17 +43,22 @@ function stepDay(dateStr: string, delta: number): string | null {
 }
 
 interface Props {
-  /** Called whenever the selected date changes. Page uses this to fetch PDHLM. */
+  /** Calendar date is the reference day for drawing levels — not the chart window. */
   onDateChange: (date: string) => void;
+  toggles: LineToggles;
+  onToggle: (key: keyof LineToggles) => void;
+  onAddCustom: (price: number) => void;
+  onClearCustom: () => void;
 }
 
-export default function TopBar({ onDateChange }: Props) {
+export default function TopBar({ onDateChange, toggles, onToggle, onAddCustom, onClearCustom }: Props) {
   const [date, setDate] = useState(todayStr);
   const [calOpen, setCalOpen] = useState(false);
   const [calYear, setCalYear] = useState(() => new Date().getFullYear());
   const [calMonth, setCalMonth] = useState(() => new Date().getMonth());
   const boxRef = useRef<HTMLDivElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
+  const [customInput, setCustomInput] = useState("");
 
   // Notify parent on mount and whenever date changes.
   useEffect(() => { onDateChange(date); }, [date, onDateChange]);
@@ -205,7 +212,81 @@ export default function TopBar({ onDateChange }: Props) {
         </div>
       )}
 
+      <div className="header-divider" />
+
+      <div className="level-toggles-group">
+        <button
+          type="button"
+          className={`toggle-btn${toggles.weekly ? " active" : ""}`}
+          title="Previous week high / low (purple)"
+          onClick={() => onToggle("weekly")}
+        >
+          Weekly
+        </button>
+        <button
+          type="button"
+          className={`toggle-btn${toggles.monday ? " active" : ""}`}
+          title="This week's Monday high / low (blue)"
+          onClick={() => onToggle("monday")}
+        >
+          Monday
+        </button>
+        <button
+          type="button"
+          className={`toggle-btn${toggles.pdhlm ? " active" : ""}`}
+          title="Previous day high / low (white) and mid (dashed)"
+          onClick={() => onToggle("pdhlm")}
+        >
+          PDHLM
+        </button>
+        <button
+          type="button"
+          className={`toggle-btn${toggles.fibb ? " active" : ""}`}
+          title="Prev 1D 75% / 25% (yellow dotted)"
+          onClick={() => onToggle("fibb")}
+        >
+          Fib
+        </button>
+      </div>
+
       <div className="top-bar-spacer" />
+
+      <form
+        className="custom-level-group"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const n = Number(customInput.trim());
+          if (!Number.isFinite(n) || n <= 0) return;
+          onAddCustom(Math.round(n * 2) / 2);
+          setCustomInput("");
+        }}
+      >
+        <input
+          className="custom-level-input"
+          value={customInput}
+          onChange={(e) => setCustomInput(e.target.value)}
+          placeholder="CUSTOM"
+          inputMode="decimal"
+          title="Add a custom price level (thick yellow)"
+        />
+        <button type="submit" className="toggle-btn custom-add-btn" title="Add custom level">
+          Add
+        </button>
+        <button
+          type="button"
+          className="trash-btn"
+          title="Remove all custom levels"
+          onClick={onClearCustom}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="3 6 5 6 21 6" />
+            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+            <path d="M10 11v6" />
+            <path d="M14 11v6" />
+            <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+          </svg>
+        </button>
+      </form>
     </header>
   );
 }
