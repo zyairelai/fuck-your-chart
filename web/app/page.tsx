@@ -1,100 +1,119 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { ITimeScaleApi, IPriceScaleApi, Time } from "lightweight-charts";
 import Chart from "../components/Chart";
-import TopBar, { TZ_OFFSETS, type TzOffset } from "../components/TopBar";
+import TopBar from "../components/TopBar";
+import type { TzOffset } from "../components/Chart";
+
+interface Pdhlm {
+  high: number;
+  low: number;
+  mid: number;
+}
 
 export default function Page() {
-  // Shared registries so the two right-side 1m charts mirror BOTH axes.
-  //   - time scales -> pan/zoom together
-  //   - price scales -> vertical moves on one drive the other
+  // ── Right column: 1m raw (top) + 1m HA (bottom) — sync time & price ────
   const oneMinuteTimeScales = useRef<ITimeScaleApi<Time>[]>([]);
   const oneMinutePriceScales = useRef<IPriceScaleApi[]>([]);
+  const rightPriceScaleLock = useRef(false);
 
-  const registerTime = (api: ITimeScaleApi<Time> | null) => {
-    if (api) {
-      if (!oneMinuteTimeScales.current.includes(api)) {
-        oneMinuteTimeScales.current.push(api);
-      }
-    }
+  const registerRightTime = (api: ITimeScaleApi<Time> | null) => {
+    if (api && !oneMinuteTimeScales.current.includes(api))
+      oneMinuteTimeScales.current.push(api);
   };
-  const registerPrice = (api: IPriceScaleApi | null) => {
-    if (api) {
-      if (!oneMinutePriceScales.current.includes(api)) {
-        oneMinutePriceScales.current.push(api);
-      }
-    }
+  const registerRightPrice = (api: IPriceScaleApi | null) => {
+    if (api && !oneMinutePriceScales.current.includes(api))
+      oneMinutePriceScales.current.push(api);
   };
 
-  // Big left chart's interval — chosen from the top bar.
-  const [bigInterval, setBigInterval] = useState<string>("3m");
-  // Global display timezone — chosen from the top bar's right side; applied
-  // to every chart so they all show HH:mm / day labels the same way.
+  // Global timezone — ONE dropdown at the bottom-right of the whole screen.
   const [tz, setTz] = useState<TzOffset>(8);
-  // Narrow the type so the chart prop stays strict.
-  const tzProp = (TZ_OFFSETS as readonly number[]).includes(tz) ? (tz as TzOffset) : 0;
 
-  /** Top bar -> server handshake. Tells the backend to load + subscribe the
-   *  picked interval; the server will then start emitting "history" and
-   *  "kline" events for it. We update local state either way so the UI
-   *  responds instantly. */
-  const onPickInterval = (next: string) => {
-    setBigInterval(next);
-    fetch(`/api/interval/${encodeURIComponent(next)}`, { method: "POST" }).catch(
-      (err) => console.error("[top-bar] interval switch failed", err),
-    );
-  };
+  // PDHLM — fetched whenever the TopBar date changes.
+  const [pdhlm, setPdhlm] = useState<Pdhlm | null>(null);
+
+  const onDateChange = useCallback(async (date: string) => {
+    try {
+      const res = await fetch(`/api/pdhlm/${encodeURIComponent(date)}`);
+      if (!res.ok) { setPdhlm(null); return; }
+      const data = (await res.json()) as Pdhlm;
+      setPdhlm(data);
+    } catch {
+      setPdhlm(null);
+    }
+  }, []);
 
   return (
     <>
-      <TopBar
-        interval={bigInterval}
-        onIntervalChange={onPickInterval}
-        tz={tz}
-        onTzChange={setTz}
-      />
+      <TopBar onDateChange={onDateChange} />
       <main className="page">
-        {/* Left: big Heikin Ashi chart whose timeframe is picked from the top
-            bar. Starts on "3m". Full EMA set 9 / 21 / 50 / 200. */}
-        <div className="cell" style={{ gridColumn: "1", gridRow: "1 / span 2" }}>
+        {/* Top-left: 5m · raw candles */}
+        <div className="cell">
           <Chart
-            interval={bigInterval}
-            heikin
-            emas={[9, 21, 50, 200]}
-            tz={tzProp}
+            interval="5m"
+            emas={[10, 20, 50, 200]}
+            defaultEmaOff={[50, 200]}
+            tz={tz}
+            pdhlm={pdhlm}
           />
         </div>
-        {/* Top right: 1m raw candles, EMA 9 / 21 / 50 / 200 (50 & 200 off by
-            default — click the darkened chip to turn them on). Synced sibling. */}
-        <div className="cell" style={{ gridColumn: "2", gridRow: "1" }}>
+        {/* Top-right: 1m · raw candles, synced with bottom-right */}
+        <div className="cell">
           <Chart
             interval="1m"
-            emas={[9, 21, 50, 200]}
+            emas={[10, 20, 50, 200]}
             defaultEmaOff={[50, 200]}
-            tz={tzProp}
-            registerTimeScale={registerTime}
+            tz={tz}
+            pdhlm={pdhlm}
+            registerTimeScale={registerRightTime}
             siblingScales={oneMinuteTimeScales}
-            registerPriceScale={registerPrice}
+            registerPriceScale={registerRightPrice}
             siblingPriceScales={oneMinutePriceScales}
+            priceScaleLock={rightPriceScaleLock}
           />
         </div>
-        {/* Bottom right: 1m Heikin Ashi, EMA 9 / 21 / 50 / 200 (50 & 200 off by
-            default). Synced sibling. */}
-        <div className="cell" style={{ gridColumn: "2", gridRow: "2" }}>
+        {/* Bottom-left: 3m · Heikin Ashi */}
+        <div className="cell">
+          <Chart
+            interval="3m"
+            heikin
+            emas={[10, 20, 50, 200]}
+            tz={tz}
+            pdhlm={pdhlm}
+          />
+        </div>
+        {/* Bottom-right: 1m · Heikin Ashi, synced with top-right */}
+        <div className="cell">
           <Chart
             interval="1m"
             heikin
-            emas={[9, 21, 50, 200]}
+            emas={[10, 20, 50, 200]}
             defaultEmaOff={[50, 200]}
-            tz={tzProp}
-            registerTimeScale={registerTime}
+            tz={tz}
+            pdhlm={pdhlm}
+            registerTimeScale={registerRightTime}
             siblingScales={oneMinuteTimeScales}
-            registerPriceScale={registerPrice}
+            registerPriceScale={registerRightPrice}
             siblingPriceScales={oneMinutePriceScales}
+            priceScaleLock={rightPriceScaleLock}
           />
         </div>
       </main>
+
+      {/* Single global TZ dropdown — bottom-right of screen, controls all 4 charts */}
+      <div className="global-tz-wrapper">
+        <select
+          className="global-tz-select"
+          value={tz}
+          onChange={(e) => setTz(Number(e.target.value) as TzOffset)}
+          title="Display timezone (all charts)"
+        >
+          <option value={0}>UTC</option>
+          <option value={4}>UTC+4</option>
+          <option value={8}>UTC+8</option>
+        </select>
+      </div>
     </>
   );
 }

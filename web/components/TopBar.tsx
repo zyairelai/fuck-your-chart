@@ -1,89 +1,211 @@
 "use client";
 
 /**
- * Top bar — matched to `sample/style.css` `.top-bar`.
- *
- *  LEFT  : timeframe picker (drives the big left chart's interval).
- *  RIGHT : global display-timezone picker (drives every chart's HH:mm / day
- *          labels on the time axis).
- *
- * There is intentionally ONE timezone selector at the top — not one per chart
- * — so switching it updates every chart at once.
+ * Top bar — date stepper + calendar modal (ported from bitcoin-history).
+ * < DATE > arrows step the selected date by one trading day.
+ * The selected date is used by the page to fetch PDHLM price lines.
  */
 
-const TIMEFRAMES = ["1m", "3m", "5m", "15m", "1h", "4h", "1d"] as const;
-type Timeframe = (typeof TIMEFRAMES)[number];
+import React, { useEffect, useRef, useState } from "react";
 
-export const TZ_OFFSETS = [0, 4, 8] as const;
-export type TzOffset = (typeof TZ_OFFSETS)[number];
+const MONTH_NAMES = [
+  "January","February","March","April","May","June",
+  "July","August","September","October","November","December",
+];
+const DAY_NAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+function todayStr(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2,"0");
+  const day = String(d.getDate()).padStart(2,"0");
+  return `${y}-${m}-${day}`;
+}
+
+function dayName(dateStr: string): string {
+  const [y,m,d] = dateStr.split("-").map(Number) as [number,number,number];
+  return DAY_NAMES[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]!;
+}
+
+/** Step a YYYY-MM-DD date by +1 or -1 calendar days (no weekend skip — crypto trades every day). */
+function stepDay(dateStr: string, delta: number): string | null {
+  const [y,m,d] = dateStr.split("-").map(Number) as [number,number,number];
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + delta);
+  const now = new Date();
+  if (dt > now) return null; // don't go into the future
+  const ry = dt.getUTCFullYear();
+  const rm = String(dt.getUTCMonth() + 1).padStart(2,"0");
+  const rd = String(dt.getUTCDate()).padStart(2,"0");
+  return `${ry}-${rm}-${rd}`;
+}
 
 interface Props {
-  /** Currently selected interval for the big left chart. */
-  interval: string;
-  /** Called when the user picks a new interval. */
-  onIntervalChange: (next: string) => void;
-  /** Currently selected display timezone offset (hours). */
-  tz: TzOffset;
-  /** Called when the user picks a new timezone. */
-  onTzChange: (next: TzOffset) => void;
+  /** Called whenever the selected date changes. Page uses this to fetch PDHLM. */
+  onDateChange: (date: string) => void;
 }
 
-function tzLabel(v: TzOffset): string {
-  if (v === 0) return "UTC";
-  return `UTC+${v}`;
-}
+export default function TopBar({ onDateChange }: Props) {
+  const [date, setDate] = useState(todayStr);
+  const [calOpen, setCalOpen] = useState(false);
+  const [calYear, setCalYear] = useState(() => new Date().getFullYear());
+  const [calMonth, setCalMonth] = useState(() => new Date().getMonth());
+  const boxRef = useRef<HTMLDivElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
 
-export default function TopBar({
-  interval,
-  onIntervalChange,
-  tz,
-  onTzChange,
-}: Props) {
-  const pick = (tf: Timeframe) => {
-    if (tf === interval) return;
-    onIntervalChange(tf);
+  // Notify parent on mount and whenever date changes.
+  useEffect(() => { onDateChange(date); }, [date, onDateChange]);
+
+  // Update to today at midnight rollover.
+  useEffect(() => {
+    const now = new Date();
+    const msUntilMidnight =
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - now.getTime();
+    const t = setTimeout(() => setDate(todayStr()), msUntilMidnight);
+    return () => clearTimeout(t);
+  }, []);
+
+  // Close calendar on outside click.
+  useEffect(() => {
+    if (!calOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        modalRef.current && !modalRef.current.contains(e.target as Node) &&
+        boxRef.current && !boxRef.current.contains(e.target as Node)
+      ) setCalOpen(false);
+    };
+    document.addEventListener("click", handler);
+    return () => document.removeEventListener("click", handler);
+  }, [calOpen]);
+
+  const changeDate = (newDate: string | null) => {
+    if (!newDate) return;
+    setDate(newDate);
   };
+
+  const openCalendar = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const [y, m] = date.split("-").map(Number) as [number, number];
+    setCalYear(y);
+    setCalMonth(m - 1);
+    setCalOpen((v) => !v);
+  };
+
+  // Modal position below the date box.
+  const getModalStyle = (): React.CSSProperties => {
+    if (!boxRef.current) return { top: 50, left: 8 };
+    const r = boxRef.current.getBoundingClientRect();
+    const modalW = 250;
+    let left = r.left + r.width / 2 - modalW / 2;
+    if (left + modalW > window.innerWidth - 8) left = window.innerWidth - modalW - 8;
+    if (left < 8) left = 8;
+    return { top: r.bottom + 6, left };
+  };
+
+  const renderCalGrid = () => {
+    const today = new Date();
+    const firstDay = new Date(Date.UTC(calYear, calMonth, 1)).getUTCDay();
+    const daysInMonth = new Date(Date.UTC(calYear, calMonth + 1, 0)).getUTCDate();
+    const cells: React.ReactNode[] = [];
+
+    for (let i = 0; i < firstDay; i++) {
+      cells.push(<div key={`e${i}`} className="cal-day-cell empty" />);
+    }
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dayObj = new Date(Date.UTC(calYear, calMonth, day));
+      const ds = `${calYear}-${String(calMonth + 1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+      const isFuture = dayObj > today;
+      const isSelected = ds === date;
+      let cls = "cal-day-cell";
+      if (isFuture) cls += " disabled";
+      else if (isSelected) cls += " selected";
+      cells.push(
+        <div
+          key={ds}
+          className={cls}
+          onClick={isFuture ? undefined : (e) => { e.stopPropagation(); changeDate(ds); setCalOpen(false); }}
+        >
+          {day}
+        </div>
+      );
+    }
+    return cells;
+  };
+
+  const prevMonth = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setCalMonth((m) => { if (m === 0) { setCalYear((y) => y - 1); return 11; } return m - 1; });
+  };
+  const nextMonth = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const now = new Date();
+    if (calYear === now.getFullYear() && calMonth === now.getMonth()) return;
+    setCalMonth((m) => { if (m === 11) { setCalYear((y) => y + 1); return 0; } return m + 1; });
+  };
+  const isNextDisabled = () => {
+    const now = new Date();
+    return calYear === now.getFullYear() && calMonth === now.getMonth();
+  };
+
+  const prevDate = stepDay(date, -1);
+  const nextDate = stepDay(date, +1);
 
   return (
     <header className="top-bar">
-      <div className="tf-group" role="group" aria-label="timeframe">
-        {TIMEFRAMES.map((tf) => {
-          const active = tf === interval;
-          return (
-            <button
-              key={tf}
-              type="button"
-              className={"tf-btn" + (active ? " active" : "")}
-              onClick={() => pick(tf)}
-              aria-pressed={active}
-            >
-              {tf}
-            </button>
-          );
-        })}
-      </div>
+      {/* Date stepper: < DATE > */}
+      <div className="date-controls">
+        <div className="date-stepper-container">
+          <button
+            className="date-stepper-btn"
+            disabled={!prevDate}
+            onClick={() => changeDate(prevDate)}
+            title="Previous day"
+          >{"<"}</button>
 
-      <div className="top-bar-spacer" />
+          <div
+            className="date-box-wrapper"
+            ref={boxRef}
+            title="Click to open calendar"
+            onClick={openCalendar}
+          >
+            <span className="date-dayname-text">{dayName(date)}</span>
+            <span className="date-display-text">{date}</span>
+          </div>
 
-      <div className="tz-group" title="Display timezone (global)">
-        <span className="tz-label">TZ</span>
-        <div className="tf-group tz-pick">
-          {TZ_OFFSETS.map((v) => {
-            const active = v === tz;
-            return (
-              <button
-                key={v}
-                type="button"
-                className={"tf-btn" + (active ? " active" : "")}
-                onClick={() => onTzChange(v)}
-                aria-pressed={active}
-              >
-                {tzLabel(v)}
-              </button>
-            );
-          })}
+          <button
+            className="date-stepper-btn"
+            disabled={!nextDate}
+            onClick={() => changeDate(nextDate)}
+            title="Next day"
+          >{">"}</button>
         </div>
       </div>
+
+      {/* Calendar modal */}
+      {calOpen && (
+        <div
+          className="calendar-modal"
+          ref={modalRef}
+          style={getModalStyle()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="cal-header">
+            <button className="cal-nav-btn" onClick={prevMonth}>{"<"}</button>
+            <span className="cal-title">{MONTH_NAMES[calMonth]} {calYear}</span>
+            <button className="cal-nav-btn" onClick={nextMonth} disabled={isNextDisabled()}>{">"}</button>
+          </div>
+          <div className="cal-weekdays">
+            {["Su","Mo","Tu","We","Th","Fr","Sa"].map((d) => (
+              <span key={d}>{d}</span>
+            ))}
+          </div>
+          <div className="cal-days-grid">
+            {renderCalGrid()}
+          </div>
+        </div>
+      )}
+
+      <div className="top-bar-spacer" />
     </header>
   );
 }

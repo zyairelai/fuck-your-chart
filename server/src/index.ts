@@ -6,9 +6,9 @@
  * is needed. This keeps the whole stack on localhost:8000 as requested.
  *
  * Responsibilities:
- *  - On boot: fetch 500 historical 3m + 1m candles for BTCUSDT futures perp.
+ *  - On boot: fetch 500 historical 5m + 3m + 1m candles for BTCUSDT spot.
  *  - Open ONE Binance WebSocket, fan out kline ticks to every browser.
- *  - Serve the built Next.js app from /web/.next/standalone.
+ *  - Serve the built Next.js static export from /web/out/.
  */
 
 import express from "express";
@@ -21,11 +21,9 @@ import { Server as IOServer } from "socket.io";
 import { klines, streamKlines } from "./binance.js";
 
 const SYMBOL = "btcusdt";
-// The 1m charts are always pinned to "1m". The big chart on the left starts
-// on "3m" but can be switched at runtime from the top-bar timeframe picker.
-// Any Binance-supported interval is accepted; the server boots with the two
-// defaults and streams / kline events for whatever else a client requests.
-const DEFAULT_INTERVALS = ["3m", "1m"] as const;
+// Fixed layout: 5m raw (top-left), 3m HA (bottom-left), 1m raw + HA (right).
+// All three intervals are booted eagerly so every chart is ready immediately.
+const DEFAULT_INTERVALS = ["5m", "3m", "1m"] as const;
 const ALLOWED_INTERVALS = new Set([
   "1m", "3m", "5m", "15m", "30m",
   "1h", "2h", "4h", "6h", "8h", "12h",
@@ -124,9 +122,7 @@ app.get("/api/status", (_req, res) => {
   });
 });
 
-/** HTTP endpoint the top-bar timeframe picker hits when the user clicks a
- *  button. Loads history for the new interval (idempotent), subscribes the
- *  live stream, and returns the cached bars. */
+/** HTTP endpoint to switch interval (kept for compatibility). */
 app.post("/api/interval/:name", async (req, res) => {
   const name = String(req.params.name);
   try {
@@ -134,6 +130,45 @@ app.post("/api/interval/:name", async (req, res) => {
     res.json({ interval: name, count: history.get(name)?.length ?? 0 });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+/**
+ * GET /api/pdhlm/:date  — Previous Day High / Low / Mid for BTCUSDT.
+ *
+ * `date` is the "selected / today" date in YYYY-MM-DD format.
+ * We return the H/L/M of the day BEFORE that date (UTC calendar day).
+ * The Binance spot 1d kline for a given UTC date opens at 00:00 UTC and
+ * closes at 23:59:59 UTC, so we just fetch the candle that opens at
+ * midnight UTC of the previous day.
+ */
+app.get("/api/pdhlm/:date", async (req, res) => {
+  try {
+    const dateStr = String(req.params.date);
+    // Parse selected date and go back one calendar day.
+    const [y, m, d] = dateStr.split("-").map(Number) as [number, number, number];
+    const selectedMs = Date.UTC(y, m - 1, d, 0, 0, 0);
+    const prevDayOpenMs = selectedMs - 86400_000;
+
+    // Binance 1d kline: startTime=prevDayOpenMs, limit=1
+    const url = `https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&startTime=${prevDayOpenMs}&limit=1`;
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`Binance 1d kline failed: ${r.status}`);
+    const raw = (await r.json()) as (string | number)[][];
+    if (!raw.length) {
+      res.status(404).json({ error: "no data for previous day" });
+      return;
+    }
+    const row = raw[0]!;
+    const high = Number(row[2]);
+    const low  = Number(row[3]);
+    const mid  = (high + low) / 2;
+    const prevDateMs = prevDayOpenMs;
+    const pDate = new Date(prevDateMs);
+    const prevDateStr = `${pDate.getUTCFullYear()}-${String(pDate.getUTCMonth()+1).padStart(2,"0")}-${String(pDate.getUTCDate()).padStart(2,"0")}`;
+    res.json({ date: prevDateStr, high, low, mid });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
   }
 });
 

@@ -185,21 +185,36 @@ html, body {
 .ohlc-bar .up { color: #26a69a; }
 .ohlc-bar .down { color: #ef5350; }
 
-/* Footer — only the live indicator, hidden by default per request. */
-.cell-footer {
-  position: absolute;
-  bottom: 4px;
+/* Global TZ dropdown — fixed bottom-right of the whole screen.
+   One dropdown controls all 4 chart time-axis labels simultaneously. */
+.global-tz-wrapper {
+  position: fixed;
+  bottom: 6px;
   right: 8px;
-  z-index: 10;
-  font-size: 10px;
-  color: #787b87;
+  z-index: 200;
   display: flex;
   align-items: center;
-  gap: 6px;
-  pointer-events: none;
 }
-.cell-footer .ok { color: #26a69a; }
-.cell-footer .muted { color: #787b87; }
+.global-tz-select {
+  background-color: #1e222d;
+  border: 1px solid #2a2e39;
+  color: #2962ff;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+  outline: none;
+  letter-spacing: 0.04em;
+  transition: border-color 0.15s, color 0.15s, background-color 0.15s;
+}
+.global-tz-select:hover,
+.global-tz-select:focus {
+  border-color: #2962ff;
+  background-color: #252a37;
+  color: #ffffff;
+}
 
 /* Right-click context menu — styled to match sample's .context-menu */
 .context-menu {
@@ -270,3 +285,159 @@ html, body {
 }
 .status .dot { width: 6px; height: 6px; border-radius: 50%; background: #26a69a; }
 .status .dot.off { background: #ef5350; }
+
+/* ── TopBar date stepper + calendar (ported from bitcoin-history) ────────── */
+.date-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.date-stepper-container {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.date-stepper-btn {
+  background-color: #1e222d;
+  border: 1px solid #2a2e39;
+  color: #d1d4dc;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  width: 26px;
+  height: 26px;
+  border-radius: 5px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+.date-stepper-btn:hover:not(:disabled) {
+  background-color: #252a37;
+  border-color: #2962ff;
+  color: #ffffff;
+}
+.date-stepper-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+  border-color: transparent;
+}
+/* The date pill: "Sat 2026-10-24" */
+.date-box-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background-color: #1e222d;
+  border: 1px solid #2962ff;
+  width: 154px;
+  height: 26px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: border-color 0.2s, background-color 0.2s;
+  user-select: none;
+}
+.date-box-wrapper:hover {
+  background-color: #252a37;
+}
+.date-dayname-text {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: #ffffff;
+  width: 28px;
+  text-align: center;
+  text-transform: uppercase;
+}
+.date-display-text {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+/* Calendar dropdown modal */
+.calendar-modal {
+  position: fixed;
+  width: 250px;
+  background-color: #1e222d;
+  border: 1px solid #2a2e39;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  padding: 12px;
+  z-index: 9999;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  user-select: none;
+}
+.cal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.cal-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #ffffff;
+}
+.cal-nav-btn {
+  background: transparent;
+  border: 1px solid #2a2e39;
+  color: #d1d4dc;
+  border-radius: 4px;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  transition: background-color 0.15s, color 0.15s;
+}
+.cal-nav-btn:hover:not(:disabled) { background-color: #2a2e39; color: #fff; }
+.cal-nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.cal-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: #787b87;
+  margin-bottom: 6px;
+}
+.cal-days-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.cal-day-cell {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  border-radius: 4px;
+  color: #d1d4dc;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+.cal-day-cell:hover:not(.disabled):not(.selected) {
+  background-color: #2962ff;
+  color: #ffffff;
+}
+.cal-day-cell.selected {
+  background-color: #2962ff;
+  color: #ffffff;
+  font-weight: 700;
+}
+.cal-day-cell.disabled {
+  color: #3b4252;
+  background-color: rgba(255,255,255,0.02);
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+.cal-day-cell.empty { cursor: default; }
+
+/* TopBar live badge — removed (no live indicator needed) */

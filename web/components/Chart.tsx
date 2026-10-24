@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   createChart,
   CandlestickSeries,
@@ -76,14 +76,14 @@ function ema(values: number[], period: number): number[] {
  *   200 -> pink    (#e91e63)
  */
 const EMA_COLOR: Record<number, string> = {
-  9: "#ff9800",
-  21: "#4caf50",
+  10: "#ff9800",
+  20: "#4caf50",
   50: "#ff9800",
   200: "#e91e63",
 };
 const EMA_LINE_WIDTH: Record<number, number> = {
-  9: 1.5,
-  21: 1.5,
+  10: 1.5,
+  20: 1.5,
   50: 2.5,
   200: 3.5,
 };
@@ -134,25 +134,25 @@ function makeTickFormatter(tz: TzOffset): (t: Time) => string {
 }
 
 interface Props {
-  /** Timeframe string from Binance ("1m", "3m", "5m", "1h", ...). The big
-   *  left chart receives whatever the user picks from the top bar; the 1m
-   *  charts stay pinned to "1m". */
+  /** Timeframe string from Binance ("1m", "3m", "5m"). */
   interval: string;
   heikin?: boolean;
   emas?: number[];
-  /** EMAs that should start in the OFF state (line hidden, chip darkened).
-   *  Used on the 1m charts where 50/200 are noisy by default — the user can
-   *  still click the chip to turn them on. */
+  /** EMAs that should start in the OFF state (line hidden, chip darkened). */
   defaultEmaOff?: number[];
-  /** Display timezone offset (hours). Controlled by the top-bar picker; same
-   *  value applied to every chart. */
+  /** Display timezone offset (hours). Shared global state from page. */
   tz?: TzOffset;
+  /** Previous Day H/L/M — drawn as price lines on this chart. */
+  pdhlm?: { high: number; low: number; mid: number } | null;
   /** Register this chart's time scale so siblings can mirror zoom/pan. */
   registerTimeScale?: (api: ITimeScaleApi<Time> | null) => void;
   siblingScales?: React.MutableRefObject<ITimeScaleApi<Time>[]>;
   /** Register this chart's right price scale so siblings mirror vertical range. */
   registerPriceScale?: (api: IPriceScaleApi | null) => void;
   siblingPriceScales?: React.MutableRefObject<IPriceScaleApi[]>;
+  /** Shared boolean lock that prevents echo-loops when sibling price scales
+   *  sync each other via the RAF polling mechanism. */
+  priceScaleLock?: React.MutableRefObject<boolean>;
 }
 
 export default function Chart({
@@ -161,10 +161,12 @@ export default function Chart({
   emas = [],
   defaultEmaOff = [],
   tz = 0,
+  pdhlm = null,
   registerTimeScale,
   siblingScales,
   registerPriceScale,
   siblingPriceScales,
+  priceScaleLock,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -172,9 +174,27 @@ export default function Chart({
   const emaRefs = useRef<ISeriesApi<"Line">[]>([]);
   const rightScaleRef = useRef<IPriceScaleApi | null>(null);
   const cacheRef = useRef<Kline[]>([]);
-  /** Last Heikin Ashi open/close — needed to compute the next HA bar from
-   *  one raw bar without re-running toHeikin() over the whole history. */
+  /** PDHLM price line handles - cleared/redrawn when pdhlm prop changes. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pdhlmLinesRef = useRef<any[]>([]);
+  /**
+   * Heikin Ashi rolling state — two slots:
+   *
+   * `lastClosedHaRef` — the HA open/close of the most-recently **closed** bar.
+   *   This is the stable anchor used as `prevHAOpen / prevHAClose` when we
+   *   compute the live (still-open) bar.  It only advances when `k.closed`.
+   *
+   * `lastHaRef` — kept for backwards-compat (history seeding); always equals
+   *   `lastClosedHaRef` after every closed bar.
+   *
+   * Why two refs?  Because Binance pushes a tick every ~250 ms for the
+   * still-open bar.  If we overwrote `lastHaRef` on every tick, the rolling
+   * HA open of the *next* bar (= (prevHAOpen + prevHAClose) / 2) would be
+   * derived from an intra-bar mid-state instead of the settled OHLC of the
+   * closed bar, causing the HA chain to drift visually.
+   */
   const lastHaRef = useRef<{ open: number; close: number } | null>(null);
+  const lastClosedHaRef = useRef<{ open: number; close: number } | null>(null);
   /** True while the user's visible range covers the latest bar. When the user
    *  drags left into history we set this to false and stop auto-following. */
   const pinnedToRightRef = useRef(true);
@@ -349,8 +369,9 @@ export default function Chart({
       wickUpColor: "#26a69a",
       wickDownColor: "#ef5350",
       borderVisible: false,
-      priceLineVisible: false,
-      lastValueVisible: false,
+      // Show current price label on right axis + dotted price line.
+      priceLineVisible: true,
+      lastValueVisible: true,
     });
     candleRef.current = candle;
 
@@ -405,6 +426,35 @@ export default function Chart({
     registerTimeScale?.(ts);
     registerPriceScale?.(right);
 
+    // ── Price-scale sync via RAF polling ─────────────────────────────────
+    // LWC has no event for manual price-scale drags, so we poll every frame.
+    // When a change is detected and the shared lock is free, we apply the new
+    // range to every sibling and hold the lock for one frame to stop the
+    // sibling's own RAF from echoing the value back.
+    let rafId = 0;
+    if (siblingPriceScales && priceScaleLock) {
+      let lastMin = NaN;
+      let lastMax = NaN;
+      const rafSync = () => {
+        if (!priceScaleLock.current) {
+          const r = right.getVisibleRange();
+          if (r && (r.from !== lastMin || r.to !== lastMax)) {
+            lastMin = r.from;
+            lastMax = r.to;
+            priceScaleLock.current = true;
+            for (const sib of siblingPriceScales.current) {
+              if (sib && sib !== right) {
+                sib.setVisibleRange({ from: r.from, to: r.to });
+              }
+            }
+            requestAnimationFrame(() => { priceScaleLock.current = false; });
+          }
+        }
+        rafId = requestAnimationFrame(rafSync);
+      };
+      rafId = requestAnimationFrame(rafSync);
+    }
+
     // OHLC hover legend — find the bar closest to the cursor's time.
     const onCrosshair = (p: MouseEventParams) => {
       if (!p.time) {
@@ -456,13 +506,37 @@ export default function Chart({
       if (!chartRef.current) return;
       const w = el?.clientWidth ?? 0;
       if (w > 0) {
-        chartRef.current.timeScale().fitContent();
+        positionInitialView();
         ro.disconnect();
       }
     });
+
+    // positionInitialView — called once the container has a real width.
+    // Instead of fitContent() (which compresses 500 bars into a tiny cell),
+    // we show the last INITIAL_BARS bars with a comfortable right gap.
+    // This gives a clean first impression regardless of timeframe.
+    const INITIAL_BARS = 150;
+    const positionInitialView = () => {
+      const c = chartRef.current;
+      if (!c) return;
+      const cached = cacheRef.current;
+      // Use cached length if history has already arrived; otherwise let
+      // fitContent handle it (history will reposition once it loads).
+      if (cached.length === 0) {
+        c.timeScale().fitContent();
+        return;
+      }
+      const total = cached.length;
+      c.timeScale().setVisibleLogicalRange({
+        from: Math.max(0, total - INITIAL_BARS),
+        to: total + 10, // 10-bar right gap so live candle has breathing room
+      });
+    };
+
     if (el) ro.observe(el);
 
     return () => {
+      if (rafId) cancelAnimationFrame(rafId);
       ro.disconnect();
       el?.removeEventListener("contextmenu", onContext);
       registerTimeScale?.(null);
@@ -474,13 +548,58 @@ export default function Chart({
   }, []);
 
   // Re-apply tick formatter when the timezone changes.
+  // Do NOT call resetTimeScale() here — that would wipe the user's current
+  // pan/zoom position every time they switch TZ.
   useEffect(() => {
     if (!chartRef.current) return;
     chartRef.current.applyOptions({
       timeScale: { tickMarkFormatter: makeTickFormatter(tz) },
     });
-    chartRef.current.timeScale().resetTimeScale();
   }, [tz]);
+
+  // Draw PDHLM price lines whenever the prop changes.
+  // High + Low: thick solid white. Mid: dashed semi-transparent white.
+  useEffect(() => {
+    const series = candleRef.current;
+    if (!series) return;
+    // Remove old lines.
+    for (const pl of pdhlmLinesRef.current) {
+      try { series.removePriceLine(pl); } catch (_) { /* already removed */ }
+    }
+    pdhlmLinesRef.current = [];
+    if (!pdhlm) return;
+    const { high, low, mid } = pdhlm;
+    pdhlmLinesRef.current.push(
+      series.createPriceLine({
+        price: high,
+        color: "#ffffff",
+        lineWidth: 2,
+        lineStyle: LineStyle.Solid,
+        axisLabelVisible: true,
+        title: "PDH",
+      })
+    );
+    pdhlmLinesRef.current.push(
+      series.createPriceLine({
+        price: mid,
+        color: "rgba(255,255,255,0.55)",
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: "PDM",
+      })
+    );
+    pdhlmLinesRef.current.push(
+      series.createPriceLine({
+        price: low,
+        color: "#ffffff",
+        lineWidth: 2,
+        lineStyle: LineStyle.Solid,
+        axisLabelVisible: true,
+        title: "PDL",
+      })
+    );
+  }, [pdhlm]);
 
   // --- socket: history + live updates --------------------------------------
   useEffect(() => {
@@ -494,13 +613,19 @@ export default function Chart({
       const raw = payload[interval];
       if (!raw || !candleRef.current) return;
       const series = heikin ? toHeikin(raw) : raw;
-      // Seed the per-tick HA scratchpad from the last HA bar we just rendered.
+
       if (heikin && series.length > 0) {
+        // Seed BOTH HA refs from the last bar in the history snapshot.
+        // History bars from the REST endpoint are all closed, so the last
+        // one is the correct settled anchor for the next live bar.
         const tail = series[series.length - 1]!;
         lastHaRef.current = { open: tail.open, close: tail.close };
+        lastClosedHaRef.current = { open: tail.open, close: tail.close };
       } else {
         lastHaRef.current = null;
+        lastClosedHaRef.current = null;
       }
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       candleRef.current.setData(series as any);
       if (raw.length > 0) {
@@ -508,12 +633,25 @@ export default function Chart({
         const lastBar = series[series.length - 1]!;
         setLastPrice(lastBar.close);
         setChange(first === 0 ? 0 : ((lastBar.close - first) / first) * 100);
-        // Cache the RAW bars — Heikin Ashi is always derived from these so
-        // EMA close values and HA prev-rolling-state stay consistent as WS
-        // ticks arrive. We never mix HA bars into the cache.
+        // Cache the RAW bars so EMA and HA derivations stay consistent.
         recomputeEmas(raw);
       }
-      chartRef.current?.timeScale().fitContent();
+      // Position the view: show the last 150 bars with a right gap.
+      // Works for every interval (1m, 3m, 5m…) regardless of bar count.
+      if (chartRef.current) {
+        const el = containerRef.current;
+        const w = el?.clientWidth ?? 0;
+        if (w > 0) {
+          // Container already has real size — position immediately.
+          const total = raw.length;
+          chartRef.current.timeScale().setVisibleLogicalRange({
+            from: Math.max(0, total - 150),
+            to: total + 10,
+          });
+        }
+        // If container is still 0-width the ResizeObserver will call
+        // positionInitialView once it gets a real size.
+      }
     });
 
     sock.on("kline", (msg: { interval: string; k: Kline }) => {
@@ -521,46 +659,69 @@ export default function Chart({
       if (!candleRef.current) return;
       const k = msg.k;
 
-      // Detect whether this tick opens a NEW bar (time > last cached time)
-      // vs. just updating the current (still-open) bar. Binance pushes a
-      // kline update roughly every second; only when a bar actually closes
-      // and a new one opens do we want to advance the viewport by one bar.
+      // ── Timestamp normalisation ──────────────────────────────────────────
+      // Lightweight Charts requires UTC **seconds**.  The server already does
+      // Math.floor(t / 1000) in binance.ts, but we guard again here so any
+      // future raw-ms value is always normalised before touching the series.
+      const timeSec: number =
+        k.time > 1e10 ? Math.floor(k.time / 1000) : k.time;
+      const bar: Kline = { ...k, time: timeSec };
+
+      // ── Per-interval timestamp cache (prevents cross-timeframe pollution) ─
+      // `cacheRef` is scoped to this single Chart instance (one interval),
+      // so each chart keeps its own independent lastTime.
       const cached = cacheRef.current;
       const prevTime = cached.length > 0 ? cached[cached.length - 1]!.time : 0;
-      const isNewBar = k.time > prevTime;
 
-      // Keep the RAW cache in sync first — the Heikin Ashi view (if enabled)
-      // is always derived from the full history so its prevHAOpen / prevHAClose
-      // stays coherent across bar rollovers.
-      if (cached.length > 0) {
-        if (isNewBar) {
-          cached.push(k);
-        } else {
-          cached[cached.length - 1] = k;
-        }
+      // Strict comparison: same time → still-open bar update; greater → new bar.
+      const isNewBar = timeSec > prevTime;
+      const isSameBar = timeSec === prevTime;
+
+      // ── RAW cache update ──────────────────────────────────────────────────
+      // We always keep the RAW bars; HA is derived on-the-fly from these.
+      if (isNewBar) {
+        // Guard: if the cache was empty (first tick before history arrived)
+        // just push; otherwise append normally.
+        cached.push(bar);
+      } else if (isSameBar && cached.length > 0) {
+        // Replace the last (still-open) bar in-place.
+        cached[cached.length - 1] = bar;
       }
+      // If timeSec < prevTime (out-of-order / duplicate), silently ignore.
 
-      // Compute the bar we want to push to the candle series. For raw charts
-      // that's just `k`; for Heikin Ashi charts we have to recompute the LAST
-      // bar from the previous HA values plus the new raw bar — otherwise the
-      // candle body and wick drift off the rest of the series.
-      let candlePayload: Kline = k;
+      // ── Heikin Ashi computation ───────────────────────────────────────────
+      // KEY FIX: always derive the live HA bar from `lastClosedHaRef`
+      // (the settled anchor of the most recently *closed* bar).  We must NOT
+      // use a ref that mutates on every intra-bar tick, because that would
+      // make the next bar's haOpen = (mid-state-open + mid-state-close) / 2
+      // instead of (prev-closed-haOpen + prev-closed-haClose) / 2.
+      let candlePayload: Kline = bar;
       if (heikin) {
-        const prev = lastHaRef.current;
+        const prev = lastClosedHaRef.current;
         const ha = toHeikinOne(
-          k,
+          bar,
           prev?.open ?? 0,
           prev?.close ?? 0,
           prev === null,
         );
-        lastHaRef.current = { open: ha.open, close: ha.close };
+        // Only advance the closed-anchor when this bar actually closes.
+        // Intra-bar ticks leave `lastClosedHaRef` untouched.
+        if (bar.closed) {
+          lastClosedHaRef.current = { open: ha.open, close: ha.close };
+          lastHaRef.current = { open: ha.open, close: ha.close };
+        }
         candlePayload = ha;
       }
+
+      // ── Series update ─────────────────────────────────────────────────────
+      // series.update() with the same timestamp overwrites the bar in-place;
+      // a greater timestamp appends a new bar to the right.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       candleRef.current.update(candlePayload as any);
 
       setLastPrice(candlePayload.close);
 
+      // ── EMA update ───────────────────────────────────────────────────────
       if (cached.length > 0 && emas.length > 0) {
         for (let i = 0; i < emas.length; i++) {
           const period = emas[i]!;
@@ -571,14 +732,14 @@ export default function Chart({
           const smoothed = ema(values, period);
           const tail = smoothed[smoothed.length - 1];
           if (typeof tail === "number") {
-            line.update({ time: k.time as Time, value: tail });
+            line.update({ time: timeSec as Time, value: tail });
           }
         }
       }
 
-      // Only advance the viewport when a NEW bar has actually opened — not
-      // on every intra-second tick of the still-open bar. This is what was
-      // making the chart visibly jump forward every second.
+      // ── Viewport advance ─────────────────────────────────────────────────
+      // Shift the logical range by 1 only when a new bar opens — not on every
+      // intra-bar tick.  Without this guard the chart jumps every ~250 ms.
       if (chartRef.current && pinnedToRightRef.current && isNewBar) {
         const ts = chartRef.current.timeScale();
         const range = ts.getVisibleLogicalRange();
@@ -599,7 +760,7 @@ export default function Chart({
 
   const fmt = (n: number | null) =>
     n == null ? "—" : n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  const sign = change == null ? "" : change >= 0 ? "+" : "";
+
 
   // EMA legend chips — CLICKABLE to toggle the line on/off. "Off" chips are
   // darkened (mixed with the dark cell background) so the user can see at a
@@ -654,12 +815,8 @@ export default function Chart({
         </div>
       )}
 
-      {/* Footer — live indicator. */}
-      <div className="cell-footer">
-        <span className={status === "live" ? "ok" : "muted"}>
-          {status === "live" ? "● live" : status === "connecting" ? "connecting…" : "● disconnected"}
-        </span>
-      </div>
+      {/* Footer removed: no live label, no TZ dropdown per chart.
+          TZ is controlled by the single global dropdown (bottom-right of screen). */}
 
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
 
