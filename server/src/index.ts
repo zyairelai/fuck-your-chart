@@ -6,8 +6,8 @@
  * is needed. This keeps the whole stack on localhost:8000 as requested.
  *
  * Responsibilities:
- *  - On boot: fetch 500 historical 5m + 3m + 1m candles for BTCUSDT spot.
- *  - Open ONE Binance WebSocket, fan out kline ticks to every browser.
+ *  - On boot: fetch historical 5m + 3m + 1m candles for BTCUSDT USDT-M perp.
+ *  - Open ONE Binance futures WebSocket, fan out kline ticks to every browser.
  *  - Serve the built Next.js static export from /web/out/.
  */
 
@@ -18,7 +18,7 @@ import { fileURLToPath } from "url";
 import cors from "cors";
 import { Server as IOServer } from "socket.io";
 
-import { klines, klinesFutures, klinesPages, streamKlines } from "./binance.js";
+import { klinesFutures, klinesPages, streamKlines, streamLastPrice } from "./binance.js";
 
 const SYMBOL = "btcusdt";
 // Fixed layout: 5m raw (top-left), 3m HA (bottom-left), 1m raw + HA (right).
@@ -64,8 +64,8 @@ async function loadInterval(interval: Interval) {
     throw new Error(`unsupported interval: ${interval}`);
   }
   const bars = await klinesPages(SYMBOL, interval, BOOT_PAGES, 1000);
-  const last = bars[bars.length - 1] as { closed?: boolean } | undefined;
-  if (last && last.closed === false) bars.pop();
+  // Keep the still-open last bar so HA can paint it from REST immediately;
+  // websocket ticks then overwrite the same timestamp.
   history.set(interval, bars);
   console.log(`[boot] loaded ${bars.length} ${interval} candles for ${SYMBOL}`);
 }
@@ -101,6 +101,11 @@ const liveStream = streamKlines(SYMBOL, [...DEFAULT_INTERVALS], (interval, k) =>
     bars.push(k);
   }
   io.emit("kline", { interval, k });
+});
+
+/** Futures last-trade price (aggTrade) — matches CoinGlass BTCUSDT perp. */
+const priceTicker = streamLastPrice(SYMBOL, (price) => {
+  io.volatile.emit("price", price);
 });
 
 io.on("connection", (socket) => {
@@ -142,7 +147,7 @@ app.get("/api/klines/:interval", async (req, res) => {
     }
     const endTime = req.query.endTime != null ? Number(req.query.endTime) : undefined;
     const limit = Math.min(Number(req.query.limit) || 1000, 1000);
-    const bars = await klines(SYMBOL, interval, limit, endTime);
+    const bars = await klinesFutures(SYMBOL, interval, limit, endTime);
     res.json(bars);
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -246,6 +251,7 @@ const PORT = Number(process.env.PORT ?? 8000);
 const shutdown = () => {
   console.log("[shutdown] closing");
   liveStream.close();
+  priceTicker.close();
   server.close(() => process.exit(0));
 };
 process.on("SIGINT", shutdown);

@@ -1,21 +1,18 @@
 /**
- * Binance public market data client.
+ * Binance USDT-M futures (perp) market data.
  *
- * History and live ticks BOTH come from the SPOT endpoint. They have to be
- * the same source: REST /fapi/v1/klines returns PERP OHLC, but the only
- * working kline WS in this environment is the spot one. Mixing the two
- * produces a "cut off candle" on startup — the REST bar paints with one
- * OHLC, the WS immediately overwrites it with a different OHLC (spot vs
- * perp basis), and the candle ends up with a body and wick that don't
- * align. Spot and perp BTC trade at visually identical prices (basis is
- * sub-bp), so the chart looks the same as coinglass/Binance perp UI.
+ * History, live klines, and the last-price ticker all come from fapi / fstream
+ * so the tab title and candles match CoinGlass BTCUSDT perpetual.
  */
 
 import WebSocket from "ws";
 
 export const SPOT_REST = "https://api.binance.com";
 export const FAPI_REST = "https://fapi.binance.com";
+export const FAPI_WS = "wss://fstream.binance.com";
 export const SPOT_WS = "wss://stream.binance.com:9443";
+const WS_IDLE_TIMEOUT_MS = 60_000;
+const WS_WATCHDOG_INTERVAL_MS = 15_000;
 
 /** A candle in lightweight-charts-friendly shape (UTC seconds). */
 export interface Kline {
@@ -31,15 +28,21 @@ export interface Kline {
 // Binance kline tuple layout (see /api/v1/klines response):
 //   [0] open time(ms), [1] open, [2] high, [3] low, [4] close,
 //   [5] volume, [6] close time(ms), [7] quote asset volume, [8] trades...
-const KLINE_CLOSED_INDEX = 6 as const;
+// NOTE: element [6] is the bar's CLOSE TIME in ms — NOT a boolean.  A bar is
+// considered closed only when its close-time is strictly in the past.  Using
+// Boolean(Number(closeTimeMs)) would always be true (any non-zero number →
+// true), which made the still-open current bar look closed on startup.
 const KLINE_OPEN_TIME = 0 as const;
 const KLINE_OPEN_FIELD = 1 as const;
 const KLINE_HIGH_FIELD = 2 as const;
 const KLINE_LOW_FIELD = 3 as const;
 const KLINE_CLOSE_FIELD = 4 as const;
 const KLINE_VOLUME_FIELD = 5 as const;
+const KLINE_CLOSE_TIME = 6 as const;
 
 function parseKline(raw: (string | number)[]): Kline {
+  // A bar is closed when its close-time is in the past.
+  const closeTimeMs = Number(raw[KLINE_CLOSE_TIME]);
   return {
     time: Math.floor(Number(raw[KLINE_OPEN_TIME]) / 1000),
     open: Number(raw[KLINE_OPEN_FIELD]),
@@ -47,7 +50,7 @@ function parseKline(raw: (string | number)[]): Kline {
     low: Number(raw[KLINE_LOW_FIELD]),
     close: Number(raw[KLINE_CLOSE_FIELD]),
     volume: Number(raw[KLINE_VOLUME_FIELD]),
-    closed: Boolean(Number(raw[KLINE_CLOSED_INDEX])),
+    closed: closeTimeMs < Date.now(),
   };
 }
 
@@ -111,7 +114,7 @@ export async function klinesPages(
   let bars: Kline[] = [];
   let endTime: number | undefined;
   for (let i = 0; i < pages; i++) {
-    const page = await klines(symbol, interval, pageSize, endTime);
+    const page = await klinesFutures(symbol, interval, pageSize, endTime);
     if (page.length === 0) break;
     if (bars.length === 0) {
       bars = page;
@@ -128,14 +131,7 @@ export async function klinesPages(
 }
 
 /**
- * Open a single combined SPOT WebSocket for all `intervals` of `symbol`. The
- * spot WS pushes kline ticks reliably (the futures WS does not in this
- * environment). Spot BTCUSDT and BTCUSDT futures perp trade at the same price
- * to the eye; the chart behaves identically.
- *
- * Returns a `streamKlines` controller. Call `.add(interval)` at runtime to
- * subscribe another interval on the existing WS (the combined stream URL is
- * rebuilt and the socket reconnects with the new streams).
+ * Combined USDT-M futures kline WebSocket (fstream.binance.com).
  */
 export function streamKlines(
   symbol: string,
@@ -150,12 +146,18 @@ export function streamKlines(
   let stopped = false;
   let backoff = 1000;
   let reconnectTimer: NodeJS.Timeout | null = null;
+  let watchdog: NodeJS.Timeout | null = null;
+  let lastMessageAt = 0;
+  let fallbackInFlight = false;
+  let fallbackActive = false;
+  let lastFallbackErrorAt = 0;
+  const lastFallbackTime = new Map<string, number>();
 
   const buildUrl = () => {
     const streams = [...activeIntervals]
       .map((i) => `${symbol.toLowerCase()}@kline_${i}`)
       .join("/");
-    return `${SPOT_WS}/stream?streams=${streams}`;
+    return `${FAPI_WS}/stream?streams=${streams}`;
   };
 
   const scheduleReconnect = () => {
@@ -167,15 +169,31 @@ export function streamKlines(
 
   const connect = () => {
     if (stopped) return;
-    const url = buildUrl();
-    ws = new WebSocket(url);
+    const connection = new WebSocket(buildUrl());
+    ws = connection;
+    let loggedFirstMessage = false;
 
-    ws.on("open", () => {
+    connection.on("open", () => {
       backoff = 1000;
-      console.log(`[binance] spot ws open: ${[...activeIntervals].join(",")}`);
+      lastMessageAt = Date.now();
+      console.log(`[binance] futures ws open: ${[...activeIntervals].join(",")}`);
+      watchdog = setInterval(() => {
+        if (Date.now() - lastMessageAt <= WS_IDLE_TIMEOUT_MS) return;
+        console.warn("[binance] futures ws idle, reconnecting");
+        connection.terminate();
+      }, WS_WATCHDOG_INTERVAL_MS);
     });
 
-    ws.on("message", (data) => {
+    connection.on("message", (data) => {
+      lastMessageAt = Date.now();
+      if (fallbackActive) {
+        fallbackActive = false;
+        console.log("[binance] futures ws recovered; REST fallback paused");
+      }
+      if (!loggedFirstMessage) {
+        loggedFirstMessage = true;
+        console.log("[binance] futures ws receiving messages");
+      }
       try {
         const msg = JSON.parse(data.toString()) as {
           stream?: string;
@@ -200,22 +218,59 @@ export function streamKlines(
       }
     });
 
-    ws.on("error", (err) => {
+    connection.on("error", (err) => {
       console.error("[binance] ws error:", err.message);
+      connection.terminate();
     });
 
-    ws.on("close", () => {
+    connection.on("close", () => {
+      if (watchdog) clearInterval(watchdog);
+      watchdog = null;
+      if (ws === connection) ws = null;
       console.log(`[binance] ws closed, reconnect in ${backoff}ms`);
       scheduleReconnect();
     });
   };
 
   connect();
+  const fallbackTimer = setInterval(() => {
+    if (stopped || (lastMessageAt > 0 && Date.now() - lastMessageAt < 5_000)) return;
+    if (fallbackInFlight) return;
+    fallbackInFlight = true;
+    if (!fallbackActive) {
+      fallbackActive = true;
+      console.warn("[binance] futures ws idle; polling latest candles via REST");
+    }
+    void Promise.all([...activeIntervals].map(async (interval) => {
+      try {
+        const bars = await klinesFutures(symbol, interval, 10);
+        const latest = bars[bars.length - 1];
+        if (!latest || Date.now() - lastMessageAt < 5_000) return;
+        const previousTime = lastFallbackTime.get(interval);
+        if (previousTime != null && latest.time > previousTime) {
+          for (const bar of bars) {
+            if (bar.closed && bar.time >= previousTime && bar.time < latest.time) {
+              onEvent(interval, bar);
+            }
+          }
+        }
+        onEvent(interval, latest);
+        lastFallbackTime.set(interval, latest.time);
+      } catch (err) {
+        if (Date.now() - lastFallbackErrorAt >= 60_000) {
+          lastFallbackErrorAt = Date.now();
+          console.error("[binance] REST kline fallback failed:", err);
+        }
+      }
+    })).finally(() => { fallbackInFlight = false; });
+  }, 2_000);
 
   return {
     close() {
       stopped = true;
+      clearInterval(fallbackTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (watchdog) clearInterval(watchdog);
       ws?.close();
     },
     add(interval: string) {
@@ -228,6 +283,118 @@ export function streamKlines(
       backoff = 1000;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       reconnectTimer = setTimeout(connect, 50);
+    },
+  };
+}
+
+/**
+ * USDT-M last trade price (aggTrade) — same "last" CoinGlass shows on BTCUSDT perp.
+ */
+export function streamLastPrice(
+  symbol: string,
+  onPrice: (price: number) => void,
+): { close: () => void } {
+  let ws: WebSocket | null = null;
+  let stopped = false;
+  let backoff = 1000;
+  let reconnectTimer: NodeJS.Timeout | null = null;
+  let watchdog: NodeJS.Timeout | null = null;
+  let lastMessageAt = 0;
+  let fallbackInFlight = false;
+  let fallbackActive = false;
+  let lastFallbackErrorAt = 0;
+
+  const url = `${FAPI_WS}/ws/${symbol.toLowerCase()}@aggTrade`;
+
+  const scheduleReconnect = () => {
+    if (stopped) return;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, backoff);
+    backoff = Math.min(backoff * 2, 30_000);
+  };
+
+  const connect = () => {
+    if (stopped) return;
+    const connection = new WebSocket(url);
+    ws = connection;
+    let loggedFirstMessage = false;
+
+    connection.on("open", () => {
+      backoff = 1000;
+      lastMessageAt = Date.now();
+      console.log(`[binance] futures aggTrade ws open: ${symbol}`);
+      watchdog = setInterval(() => {
+        if (Date.now() - lastMessageAt <= WS_IDLE_TIMEOUT_MS) return;
+        console.warn("[binance] aggTrade ws idle, reconnecting");
+        connection.terminate();
+      }, WS_WATCHDOG_INTERVAL_MS);
+    });
+
+    connection.on("message", (data) => {
+      lastMessageAt = Date.now();
+      if (fallbackActive) {
+        fallbackActive = false;
+        console.log("[binance] aggTrade ws recovered; REST fallback paused");
+      }
+      if (!loggedFirstMessage) {
+        loggedFirstMessage = true;
+        console.log("[binance] aggTrade ws receiving messages");
+      }
+      try {
+        const msg = JSON.parse(data.toString()) as { p?: string };
+        const price = Number(msg.p);
+        if (Number.isFinite(price) && price > 0) onPrice(price);
+      } catch (err) {
+        console.error("[binance] aggTrade parse error:", err);
+      }
+    });
+
+    connection.on("error", (err) => {
+      console.error("[binance] aggTrade ws error:", err.message);
+      connection.terminate();
+    });
+
+    connection.on("close", () => {
+      if (watchdog) clearInterval(watchdog);
+      watchdog = null;
+      if (ws === connection) ws = null;
+      console.log(`[binance] aggTrade ws closed, reconnect in ${backoff}ms`);
+      scheduleReconnect();
+    });
+  };
+
+  connect();
+  const fallbackTimer = setInterval(() => {
+    if (stopped || (lastMessageAt > 0 && Date.now() - lastMessageAt < 5_000)) return;
+    if (fallbackInFlight) return;
+    fallbackInFlight = true;
+    if (!fallbackActive) {
+      fallbackActive = true;
+      console.warn("[binance] aggTrade ws idle; polling latest price via REST");
+    }
+    void fetch(`${FAPI_REST}/fapi/v1/ticker/price?symbol=${encodeURIComponent(symbol.toUpperCase())}`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`ticker request failed: ${response.status}`);
+        const result = await response.json() as { price?: string };
+        const price = Number(result.price);
+        if (price > 0 && Date.now() - lastMessageAt >= 5_000) onPrice(price);
+      })
+      .catch((err) => {
+        if (Date.now() - lastFallbackErrorAt >= 60_000) {
+          lastFallbackErrorAt = Date.now();
+          console.error("[binance] REST ticker fallback failed:", err);
+        }
+      })
+      .finally(() => { fallbackInFlight = false; });
+  }, 2_000);
+
+  return {
+    close() {
+      stopped = true;
+      clearInterval(fallbackTimer);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (watchdog) clearInterval(watchdog);
+      ws?.close();
     },
   };
 }

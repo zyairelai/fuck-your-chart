@@ -55,11 +55,34 @@ function toHeikin(c: Kline[]): Kline[] {
 /** Compute the Heikin Ashi value of ONE bar given the previous HA bar. Used
  *  per-tick so we don't have to re-derive the entire history on every tick. */
 function toHeikinOne(cur: Kline, prevHAOpen: number, prevHAClose: number, isFirst: boolean): Kline {
+  // Close = OHLC/4 of this tick's raw kline. Open = previous HA body's mid.
   const haClose = (cur.open + cur.high + cur.low + cur.close) / 4;
   const haOpen = isFirst ? (cur.open + cur.close) / 2 : (prevHAOpen + prevHAClose) / 2;
   const haHigh = Math.max(cur.high, haOpen, haClose);
   const haLow = Math.min(cur.low, haOpen, haClose);
   return { time: cur.time, open: haOpen, high: haHigh, low: haLow, close: haClose, volume: cur.volume, closed: cur.closed };
+}
+
+/** Build HA series and the closed-bar anchor used for the still-open candle.
+ *  The live bar's HA open is always the previous body's midpoint — never the
+ *  forming bar itself. */
+function heikinSeriesAndAnchor(raw: Kline[]): {
+  series: Kline[];
+  lastClosed: { open: number; close: number } | null;
+} {
+  const series = toHeikin(raw);
+  if (series.length === 0) return { series, lastClosed: null };
+  const lastRaw = raw[raw.length - 1]!;
+  if (lastRaw.closed) {
+    const tail = series[series.length - 1]!;
+    return { series, lastClosed: { open: tail.open, close: tail.close } };
+  }
+  if (series.length >= 2) {
+    const prev = series[series.length - 2]!;
+    series[series.length - 1] = toHeikinOne(lastRaw, prev.open, prev.close, false);
+    return { series, lastClosed: { open: prev.open, close: prev.close } };
+  }
+  return { series, lastClosed: null };
 }
 
 /** Simple EMA helper — same series in, smoothed series out. */
@@ -788,20 +811,22 @@ export default function Chart({
     sock.on("disconnect", () => setStatus("off"));
     sock.on("connect_error", () => setStatus("off"));
 
+    sock.on("price", (p: number) => {
+      if (interval === "1m" && !heikin) setTabTitle(p);
+    });
+
     sock.on("history", (payload: Record<string, Kline[]>) => {
       const raw = payload[interval];
       if (!raw || !candleRef.current) return;
       seedHistory(interval, raw);
-      const series = heikin ? toHeikin(raw) : raw;
-
-      if (heikin && series.length > 0) {
-        // Seed BOTH HA refs from the last bar in the history snapshot.
-        // History bars from the REST endpoint are all closed, so the last
-        // one is the correct settled anchor for the next live bar.
-        const tail = series[series.length - 1]!;
-        lastHaRef.current = { open: tail.open, close: tail.close };
-        lastClosedHaRef.current = { open: tail.open, close: tail.close };
+      let series: Kline[];
+      if (heikin) {
+        const built = heikinSeriesAndAnchor(raw);
+        series = built.series;
+        lastClosedHaRef.current = built.lastClosed;
+        lastHaRef.current = built.lastClosed;
       } else {
+        series = raw;
         lastHaRef.current = null;
         lastClosedHaRef.current = null;
       }
@@ -831,6 +856,7 @@ export default function Chart({
     sock.on("kline", (msg: { interval: string; k: Kline }) => {
       if (msg.interval !== interval) return;
       if (!candleRef.current) return;
+      if (cacheRef.current.length === 0) return;
       const k = msg.k;
 
       // ── Timestamp normalisation ──────────────────────────────────────────
@@ -850,6 +876,7 @@ export default function Chart({
       // Strict comparison: same time → still-open bar update; greater → new bar.
       const isNewBar = timeSec > prevTime;
       const isSameBar = timeSec === prevTime;
+      if (!isNewBar && !isSameBar) return;
 
       // ── RAW cache update ──────────────────────────────────────────────────
       // We always keep the RAW bars; HA is derived on-the-fly from these.
@@ -862,7 +889,6 @@ export default function Chart({
         cached[cached.length - 1] = bar;
       }
       applyLiveKline(interval, bar);
-      // If timeSec < prevTime (out-of-order / duplicate), silently ignore.
 
       // ── Heikin Ashi computation ───────────────────────────────────────────
       // KEY FIX: always derive the live HA bar from `lastClosedHaRef`
@@ -903,8 +929,15 @@ export default function Chart({
       if (interval === "1m" && !heikin) setTabTitle(bar.close);
 
       // ── EMA update (from the displayed close: raw or Heikin Ashi) ────────
-      const displayed = heikin ? toHeikin(cached) : cached;
-      displayCacheRef.current = displayed;
+      // Incremental: instead of rerunning toHeikin(cached) for every tick
+      // (O(n) per tick with 10k+ bars), we update displayCacheRef in-place
+      // using the already-computed candlePayload.
+      const displayed = displayCacheRef.current;
+      if (isNewBar) {
+        displayed.push(candlePayload);
+      } else if (isSameBar && displayed.length > 0) {
+        displayed[displayed.length - 1] = candlePayload;
+      }
       if (displayed.length > 0 && emas.length > 0) {
         const values = displayed.map((c) => c.close);
         for (let i = 0; i < emas.length; i++) {
@@ -955,7 +988,15 @@ export default function Chart({
       const ts = chartRef.current.timeScale();
       const range = ts.getVisibleLogicalRange();
       cacheRef.current = raw.slice();
-      const series = heikin ? toHeikin(raw) : raw;
+      let series: Kline[];
+      if (heikin) {
+        const built = heikinSeriesAndAnchor(raw);
+        series = built.series;
+        lastClosedHaRef.current = built.lastClosed;
+        lastHaRef.current = built.lastClosed;
+      } else {
+        series = raw;
+      }
       displayCacheRef.current = series;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       candleRef.current.setData(series as any);
@@ -966,11 +1007,6 @@ export default function Chart({
         );
       }
       paintEmas(series);
-      if (heikin && series.length > 0) {
-        const closed = [...series].reverse().find((b) => b.closed) ?? series[series.length - 1]!;
-        lastHaRef.current = { open: closed.open, close: closed.close };
-        lastClosedHaRef.current = { open: closed.open, close: closed.close };
-      }
       if (range) {
         ts.setVisibleLogicalRange({
           from: range.from + ev.prepended,

@@ -1,6 +1,10 @@
 node_modules
+**/node_modules
 .next
+**/.next
 dist
 .git
 .gitignore
 *.md
+bitcoin-history
+**/.DS_Store
