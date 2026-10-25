@@ -17,6 +17,7 @@ const DEFAULT_TOGGLES: LineToggles = {
   monday: false,
   pdhlm: true,
   fibb: false,
+  weekend: false,
 };
 
 export default function Page() {

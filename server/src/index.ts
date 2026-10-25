@@ -205,10 +205,19 @@ app.get("/api/zones/:date", async (req, res) => {
     const mondaySrc = barAt(daily, weekStartSec);
     const monday = mondaySrc ? { high: mondaySrc.high, low: mondaySrc.low } : null;
 
+    const saturdaySrc = daily.find((bar) => bar.time === weekStartSec - 2 * 86400);
+    const sundaySrc = daily.find((bar) => bar.time === weekStartSec - 86400);
+    let weekend: { high: number; low: number; mid: number } | null = null;
+    if (saturdaySrc && sundaySrc) {
+      const high = Math.max(saturdaySrc.high, sundaySrc.high);
+      const low = Math.min(saturdaySrc.low, sundaySrc.low);
+      weekend = { high, low, mid: (high + low) / 2 };
+    }
+
     const prevWeekSrc = barAt(weekly, weekStartSec - 7 * 86400);
     const prevWeek = prevWeekSrc ? { high: prevWeekSrc.high, low: prevWeekSrc.low } : null;
 
-    res.json({ date: dateStr, prevWeek, monday, prevDay });
+    res.json({ date: dateStr, prevWeek, monday, prevDay, weekend });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }

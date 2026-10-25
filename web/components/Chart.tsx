@@ -242,6 +242,7 @@ export interface Zones {
   prevWeek: { high: number; low: number } | null;
   monday: { high: number; low: number } | null;
   prevDay: { high: number; low: number; mid: number; p25: number; p75: number } | null;
+  weekend: { high: number; low: number; mid: number } | null;
 }
 
 export interface LineToggles {
@@ -249,6 +250,7 @@ export interface LineToggles {
   monday: boolean;
   pdhlm: boolean;
   fibb: boolean;
+  weekend: boolean;
 }
 
 export type CustomLevelColor = "red" | "yellow" | "green";
@@ -289,7 +291,7 @@ export default function Chart({
   defaultEmaOff = [],
   tz = 0,
   zones = null,
-  lineToggles = { weekly: true, monday: false, pdhlm: true, fibb: false },
+  lineToggles = { weekly: true, monday: false, pdhlm: true, fibb: false, weekend: false },
   customLevels = [],
   registerTimeScale,
   siblingScales,
@@ -811,12 +813,17 @@ export default function Chart({
       add(zones.prevDay.p75, "#ffeb3b", 2, LineStyle.Dotted, "75%");
       add(zones.prevDay.p25, "#ffeb3b", 2, LineStyle.Dotted, "25%");
     }
+    if (lineToggles.weekend && zones.weekend) {
+      add(zones.weekend.high, "#ffffff", 2, LineStyle.Solid, "WH");
+      add(zones.weekend.mid, "rgba(255,255,255,0.85)", 2, LineStyle.Dashed, "WM");
+      add(zones.weekend.low, "#ffffff", 2, LineStyle.Solid, "WL");
+    }
     for (let i = 0; i < customLevels.length; i++) {
       const level = customLevels[i]!;
       const color = level.color === "red"
         ? "#ef5350"
         : level.color === "green"
-          ? "#26a69a"
+          ? "#7cfc00"
           : "#ffeb3b";
       add(level.price, color, 3, LineStyle.Solid, `C${i + 1}`);
     }

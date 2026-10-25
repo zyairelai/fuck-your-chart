@@ -13,7 +13,7 @@ import type { CustomLevelColor, LineToggles } from "./Chart";
 const CUSTOM_COLORS: Record<CustomLevelColor, string> = {
   red: "#ef5350",
   yellow: "#ffeb3b",
-  green: "#26a69a",
+  green: "#7cfc00",
 };
 
 const MONTH_NAMES = [
@@ -253,6 +253,14 @@ export default function TopBar({ onDateChange, toggles, onToggle, onAddCustom, o
           onClick={() => onToggle("fibb")}
         >
           25% / 75%
+        </button>
+        <button
+          type="button"
+          className={`toggle-btn${toggles.weekend ? " active" : ""}`}
+          title="Previous weekend high / low (white) and mid (dashed)"
+          onClick={() => onToggle("weekend")}
+        >
+          Weekend
         </button>
       </div>
 
