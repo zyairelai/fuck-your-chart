@@ -4,7 +4,7 @@ import { useCallback, useRef, useState } from "react";
 import type { ITimeScaleApi, IPriceScaleApi, Time } from "lightweight-charts";
 import Chart from "../components/Chart";
 import TopBar from "../components/TopBar";
-import type { TzOffset, Zones, LineToggles } from "../components/Chart";
+import type { TzOffset, Zones, LineToggles, CustomLevel, CustomLevelColor } from "../components/Chart";
 
 const ALL_EMAS = [10, 20, 50, 200];
 /** 5m: 50 + 200 on by default; 10 + 20 off. */
@@ -37,7 +37,7 @@ export default function Page() {
   const [tz, setTz] = useState<TzOffset>(8);
   const [zones, setZones] = useState<Zones | null>(null);
   const [toggles, setToggles] = useState<LineToggles>(DEFAULT_TOGGLES);
-  const [customLevels, setCustomLevels] = useState<number[]>([]);
+  const [customLevels, setCustomLevels] = useState<CustomLevel[]>([]);
 
   const onDateChange = useCallback(async (date: string) => {
     try {
@@ -60,7 +60,7 @@ export default function Page() {
         onDateChange={onDateChange}
         toggles={toggles}
         onToggle={onToggle}
-        onAddCustom={(price) => setCustomLevels((prev) => [...prev, price])}
+        onAddCustom={(price, color) => setCustomLevels((prev) => [...prev, { price, color }])}
         onClearCustom={() => setCustomLevels([])}
       />
       <main className="page">

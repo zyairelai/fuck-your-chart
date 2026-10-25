@@ -100,13 +100,13 @@ function ema(values: number[], period: number): number[] {
 
 /**
  * EMA colour map — matched to `sample/js/chart.js`:
- *   9   -> orange  (#ff9800)
+ *   10  -> orange  (#ff6d00)
  *   21  -> green   (#4caf50)
- *   50  -> orange  (#ff9800)  (sample uses the same orange, lineWidth 2.5)
+ *   50  -> orange  (#ff9800)  (lineWidth 2.5)
  *   200 -> pink    (#e91e63)
  */
 const EMA_COLOR: Record<number, string> = {
-  10: "#ff9800",
+  10: "#ff6d00",
   20: "#4caf50",
   50: "#ff9800",
   200: "#e91e63",
@@ -251,6 +251,13 @@ export interface LineToggles {
   fibb: boolean;
 }
 
+export type CustomLevelColor = "red" | "yellow" | "green";
+
+export interface CustomLevel {
+  price: number;
+  color: CustomLevelColor;
+}
+
 interface Props {
   /** Timeframe string from Binance ("1m", "3m", "5m"). */
   interval: string;
@@ -263,7 +270,7 @@ interface Props {
   /** Horizontal levels from the calendar date (does not move the chart). */
   zones?: Zones | null;
   lineToggles?: LineToggles;
-  customLevels?: number[];
+  customLevels?: CustomLevel[];
   /** Register this chart's time scale so siblings can mirror zoom/pan. */
   registerTimeScale?: (api: ITimeScaleApi<Time> | null) => void;
   siblingScales?: React.MutableRefObject<ITimeScaleApi<Time>[]>;
@@ -463,13 +470,20 @@ export default function Chart({
     const slots = Math.max(40, Math.floor((w - 70) / TARGET_BAR_SPACING));
     const futureSlots = Math.min(
       futureBarCount(interval),
-      Math.max(24, Math.floor(slots * 0.3)),
+      Math.max(4, Math.floor(slots * 0.2)),
     );
-    ts.setVisibleLogicalRange({
+    const range = {
       from: Math.max(0, total - (slots - futureSlots)),
       to: total + futureSlots,
-    });
+    };
+    ts.setVisibleLogicalRange(range);
+    for (const sibling of siblingScales?.current ?? []) {
+      if (sibling !== ts) sibling.setVisibleLogicalRange(range);
+    }
     rightScaleRef.current?.setAutoScale(true);
+    for (const sibling of siblingPriceScales?.current ?? []) {
+      if (sibling !== rightScaleRef.current) sibling.setAutoScale(true);
+    }
     requestAnimationFrame(() => {
       suppressTimeSyncRef.current = false;
     });
@@ -798,8 +812,13 @@ export default function Chart({
       add(zones.prevDay.p25, "#ffeb3b", 2, LineStyle.Dotted, "25%");
     }
     for (let i = 0; i < customLevels.length; i++) {
-      const px = customLevels[i]!;
-      add(px, "#ffeb3b", 3, LineStyle.Solid, `C${i + 1}`);
+      const level = customLevels[i]!;
+      const color = level.color === "red"
+        ? "#ef5350"
+        : level.color === "green"
+          ? "#26a69a"
+          : "#ffeb3b";
+      add(level.price, color, 3, LineStyle.Solid, `C${i + 1}`);
     }
   }, [zones, lineToggles, customLevels, chartReady]);
 
@@ -887,13 +906,7 @@ export default function Chart({
           cached[cached.length - 1] = finalizedRaw;
           applyLiveKline(interval, finalizedRaw);
 
-          const anchor = lastClosedHaRef.current;
-          const finalizedHa = toHeikinOne(
-            finalizedRaw,
-            anchor?.open ?? 0,
-            anchor?.close ?? 0,
-            anchor === null,
-          );
+          const finalizedHa = toHeikin(cached)[cached.length - 1]!;
           lastClosedHaRef.current = { open: finalizedHa.open, close: finalizedHa.close };
           lastHaRef.current = lastClosedHaRef.current;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -915,23 +928,11 @@ export default function Chart({
       }
       applyLiveKline(interval, bar);
 
-      // ── Heikin Ashi computation ───────────────────────────────────────────
-      // KEY FIX: always derive the live HA bar from `lastClosedHaRef`
-      // (the settled anchor of the most recently *closed* bar).  We must NOT
-      // use a ref that mutates on every intra-bar tick, because that would
-      // make the next bar's haOpen = (mid-state-open + mid-state-close) / 2
-      // instead of (prev-closed-haOpen + prev-closed-haClose) / 2.
+      // Recompute from the canonical raw cache so a missed close packet cannot
+      // leave the rolling HA anchor one bar behind.
       let candlePayload: Kline = bar;
       if (heikin) {
-        const prev = lastClosedHaRef.current;
-        const ha = toHeikinOne(
-          bar,
-          prev?.open ?? 0,
-          prev?.close ?? 0,
-          prev === null,
-        );
-        // Only advance the closed-anchor when this bar actually closes.
-        // Intra-bar ticks leave `lastClosedHaRef` untouched.
+        const ha = toHeikin(cached)[cached.length - 1]!;
         if (bar.closed) {
           lastClosedHaRef.current = { open: ha.open, close: ha.close };
           lastHaRef.current = { open: ha.open, close: ha.close };
@@ -1129,7 +1130,7 @@ export default function Chart({
               <path d="M3 12a9 9 0 1 0 3-6.7" />
               <polyline points="3 4 3 9 8 9" />
             </svg>
-            Reset price scale
+            Reset
           </button>
         </div>
       )}

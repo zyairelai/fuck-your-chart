@@ -13,6 +13,9 @@ Three live BTC/USDT charts in a single Docker container on `localhost:8000`. Ins
 ```bash
 docker compose up --build
 ```
+```bash
+docker system prune -a --volumes
+```
 
 Open: <http://localhost:8000>
 

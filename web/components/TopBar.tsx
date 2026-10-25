@@ -8,7 +8,13 @@
  */
 
 import React, { useEffect, useRef, useState } from "react";
-import type { LineToggles } from "./Chart";
+import type { CustomLevelColor, LineToggles } from "./Chart";
+
+const CUSTOM_COLORS: Record<CustomLevelColor, string> = {
+  red: "#ef5350",
+  yellow: "#ffeb3b",
+  green: "#26a69a",
+};
 
 const MONTH_NAMES = [
   "January","February","March","April","May","June",
@@ -47,7 +53,7 @@ interface Props {
   onDateChange: (date: string) => void;
   toggles: LineToggles;
   onToggle: (key: keyof LineToggles) => void;
-  onAddCustom: (price: number) => void;
+  onAddCustom: (price: number, color: CustomLevelColor) => void;
   onClearCustom: () => void;
 }
 
@@ -59,6 +65,7 @@ export default function TopBar({ onDateChange, toggles, onToggle, onAddCustom, o
   const boxRef = useRef<HTMLDivElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
   const [customInput, setCustomInput] = useState("");
+  const [customColor, setCustomColor] = useState<CustomLevelColor>("yellow");
 
   // Notify parent on mount and whenever date changes.
   useEffect(() => { onDateChange(date); }, [date, onDateChange]);
@@ -245,7 +252,7 @@ export default function TopBar({ onDateChange, toggles, onToggle, onAddCustom, o
           title="Prev 1D 75% / 25% (yellow dotted)"
           onClick={() => onToggle("fibb")}
         >
-          Fib
+          25% / 75%
         </button>
       </div>
 
@@ -257,17 +264,42 @@ export default function TopBar({ onDateChange, toggles, onToggle, onAddCustom, o
           e.preventDefault();
           const n = Number(customInput.trim());
           if (!Number.isFinite(n) || n <= 0) return;
-          onAddCustom(Math.round(n * 2) / 2);
+          onAddCustom(Math.round(n * 2) / 2, customColor);
           setCustomInput("");
         }}
       >
+        <details className="custom-color-picker">
+          <summary
+            className="custom-color-trigger"
+            title={`Custom line color: ${customColor}`}
+            aria-label={`Custom line color: ${customColor}`}
+          >
+            <span style={{ backgroundColor: CUSTOM_COLORS[customColor] }} />
+          </summary>
+          <div className="custom-color-menu">
+            {(["red", "yellow", "green"] as const).map((color) => (
+              <button
+                key={color}
+                type="button"
+                className="custom-color-option"
+                onClick={(event) => {
+                  setCustomColor(color);
+                  event.currentTarget.closest("details")?.removeAttribute("open");
+                }}
+              >
+                <span style={{ backgroundColor: CUSTOM_COLORS[color] }} />
+                {color.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        </details>
         <input
           className="custom-level-input"
           value={customInput}
           onChange={(e) => setCustomInput(e.target.value)}
           placeholder="CUSTOM"
           inputMode="decimal"
-          title="Add a custom price level (thick yellow)"
+          title={`Add a custom price level (${customColor})`}
         />
         <button type="submit" className="toggle-btn custom-add-btn" title="Add custom level">
           Add

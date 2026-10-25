@@ -123,6 +123,57 @@ html, body {
   gap: 6px;
   margin-left: 8px;
 }
+.custom-color-picker {
+  position: relative;
+}
+.custom-color-trigger {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #2a2e39;
+  border-radius: 4px;
+  background: #1e222d;
+  cursor: pointer;
+  list-style: none;
+}
+.custom-color-trigger::-webkit-details-marker { display: none; }
+.custom-color-trigger span,
+.custom-color-option span {
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
+.custom-color-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 100;
+  display: grid;
+  min-width: 112px;
+  padding: 4px;
+  border: 1px solid #2a2e39;
+  border-radius: 4px;
+  background: #131722;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.custom-color-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #d6d6d6;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.custom-color-option:hover { background: #252a37; }
 .custom-level-input {
   width: 92px;
   height: 28px;
