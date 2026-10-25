@@ -878,6 +878,31 @@ export default function Chart({
       const isSameBar = timeSec === prevTime;
       if (!isNewBar && !isSameBar) return;
 
+      // A stream can deliver the next bar before the prior bar's final update.
+      // Settle that prior bar first so the new HA open uses the correct anchor.
+      if (heikin && isNewBar && cached.length > 0) {
+        const previousRaw = cached[cached.length - 1]!;
+        if (!previousRaw.closed) {
+          const finalizedRaw = { ...previousRaw, closed: true };
+          cached[cached.length - 1] = finalizedRaw;
+          applyLiveKline(interval, finalizedRaw);
+
+          const anchor = lastClosedHaRef.current;
+          const finalizedHa = toHeikinOne(
+            finalizedRaw,
+            anchor?.open ?? 0,
+            anchor?.close ?? 0,
+            anchor === null,
+          );
+          lastClosedHaRef.current = { open: finalizedHa.open, close: finalizedHa.close };
+          lastHaRef.current = lastClosedHaRef.current;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          candleRef.current.update(finalizedHa as any);
+          const displayed = displayCacheRef.current;
+          if (displayed.length > 0) displayed[displayed.length - 1] = finalizedHa;
+        }
+      }
+
       // ── RAW cache update ──────────────────────────────────────────────────
       // We always keep the RAW bars; HA is derived on-the-fly from these.
       if (isNewBar) {

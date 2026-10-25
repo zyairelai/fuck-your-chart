@@ -13,6 +13,8 @@ export const FAPI_WS = "wss://fstream.binance.com";
 export const SPOT_WS = "wss://stream.binance.com:9443";
 const WS_IDLE_TIMEOUT_MS = 60_000;
 const WS_WATCHDOG_INTERVAL_MS = 15_000;
+const WS_FALLBACK_IDLE_MS = 3_000;
+const REST_FALLBACK_POLL_MS = 1_000;
 
 /** A candle in lightweight-charts-friendly shape (UTC seconds). */
 export interface Kline {
@@ -152,6 +154,7 @@ export function streamKlines(
   let fallbackActive = false;
   let lastFallbackErrorAt = 0;
   const lastFallbackTime = new Map<string, number>();
+  const lastFallbackKline = new Map<string, Kline>();
 
   const buildUrl = () => {
     const streams = [...activeIntervals]
@@ -234,7 +237,7 @@ export function streamKlines(
 
   connect();
   const fallbackTimer = setInterval(() => {
-    if (stopped || (lastMessageAt > 0 && Date.now() - lastMessageAt < 5_000)) return;
+    if (stopped || (lastMessageAt > 0 && Date.now() - lastMessageAt < WS_FALLBACK_IDLE_MS)) return;
     if (fallbackInFlight) return;
     fallbackInFlight = true;
     if (!fallbackActive) {
@@ -245,7 +248,7 @@ export function streamKlines(
       try {
         const bars = await klinesFutures(symbol, interval, 10);
         const latest = bars[bars.length - 1];
-        if (!latest || Date.now() - lastMessageAt < 5_000) return;
+        if (!latest || Date.now() - lastMessageAt < WS_FALLBACK_IDLE_MS) return;
         const previousTime = lastFallbackTime.get(interval);
         if (previousTime != null && latest.time > previousTime) {
           for (const bar of bars) {
@@ -254,8 +257,18 @@ export function streamKlines(
             }
           }
         }
-        onEvent(interval, latest);
+        const previous = lastFallbackKline.get(interval);
+        const changed = !previous
+          || previous.time !== latest.time
+          || previous.open !== latest.open
+          || previous.high !== latest.high
+          || previous.low !== latest.low
+          || previous.close !== latest.close
+          || previous.volume !== latest.volume
+          || previous.closed !== latest.closed;
+        if (changed) onEvent(interval, latest);
         lastFallbackTime.set(interval, latest.time);
+        lastFallbackKline.set(interval, latest);
       } catch (err) {
         if (Date.now() - lastFallbackErrorAt >= 60_000) {
           lastFallbackErrorAt = Date.now();
@@ -263,7 +276,7 @@ export function streamKlines(
         }
       }
     })).finally(() => { fallbackInFlight = false; });
-  }, 2_000);
+  }, REST_FALLBACK_POLL_MS);
 
   return {
     close() {
@@ -303,6 +316,7 @@ export function streamLastPrice(
   let fallbackInFlight = false;
   let fallbackActive = false;
   let lastFallbackErrorAt = 0;
+  let lastFallbackPrice: number | null = null;
 
   const url = `${FAPI_WS}/ws/${symbol.toLowerCase()}@aggTrade`;
 
@@ -365,7 +379,7 @@ export function streamLastPrice(
 
   connect();
   const fallbackTimer = setInterval(() => {
-    if (stopped || (lastMessageAt > 0 && Date.now() - lastMessageAt < 5_000)) return;
+    if (stopped || (lastMessageAt > 0 && Date.now() - lastMessageAt < WS_FALLBACK_IDLE_MS)) return;
     if (fallbackInFlight) return;
     fallbackInFlight = true;
     if (!fallbackActive) {
@@ -377,7 +391,14 @@ export function streamLastPrice(
         if (!response.ok) throw new Error(`ticker request failed: ${response.status}`);
         const result = await response.json() as { price?: string };
         const price = Number(result.price);
-        if (price > 0 && Date.now() - lastMessageAt >= 5_000) onPrice(price);
+        if (
+          price > 0
+          && price !== lastFallbackPrice
+          && Date.now() - lastMessageAt >= WS_FALLBACK_IDLE_MS
+        ) {
+          lastFallbackPrice = price;
+          onPrice(price);
+        }
       })
       .catch((err) => {
         if (Date.now() - lastFallbackErrorAt >= 60_000) {
@@ -386,7 +407,7 @@ export function streamLastPrice(
         }
       })
       .finally(() => { fallbackInFlight = false; });
-  }, 2_000);
+  }, REST_FALLBACK_POLL_MS);
 
   return {
     close() {
