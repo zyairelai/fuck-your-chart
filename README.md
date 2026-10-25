@@ -35,6 +35,8 @@ On boot the Express server fetches **500 historical candles per interval** from 
 
 Each chart subscribes to its own interval, calls `series.update(k)` for the open candle (which mutates in place until the candle closes), and appends a fresh bar on rollover. EMA lines are recomputed on history load and patched on the open candle's tail using a local cache so the overlay tracks the live price smoothly.
 
+Every chart also has a fixed lower footprint-delta histogram, enabled by default and controlled by the `footprint` header toggle. Delta is Binance taker-buy BTC volume minus taker-sell BTC volume for each candle; bars are green for positive delta and red for negative delta. Hover a bar to show its signed integer delta above the bar. Turning the toggle off removes the entire pane. The pane divider is subtle and cannot be dragged.
+
 ## A note on the data source
 
 History is loaded from the **futures perp** REST endpoint (the user asked for "BTCUSDT futures perp"). Live ticks come from the **spot** WebSocket — in the sandbox where this image was built, the futures WS server pushes nothing for the `kline` topic (other topics like `trade` and `depth` work fine). Spot and futures perp trade at essentially the same price (basis is sub-basis-point), so the charts look identical to the eye. If you want pure futures WS live ticks, change `SPOT_WS` to `FAPI_WS` in `server/src/binance.ts` — the rest of the pipeline is agnostic to the source.

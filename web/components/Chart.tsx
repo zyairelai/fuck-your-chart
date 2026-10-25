@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   createChart,
   CandlestickSeries,
+  HistogramSeries,
   LineSeries,
   LineStyle,
   CrosshairMode,
@@ -31,7 +32,15 @@ interface Kline {
   low: number;
   close: number;
   volume: number;
+  takerBuyVolume: number;
   closed: boolean;
+}
+
+interface DeltaHover {
+  text: string;
+  color: string;
+  left: number;
+  top: number;
 }
 
 /** Heikin Ashi transform — applied client-side from the regular candles. */
@@ -45,7 +54,7 @@ function toHeikin(c: Kline[]): Kline[] {
     const haOpen = i === 0 ? (cur.open + cur.close) / 2 : (prevHAOpen + prevHAClose) / 2;
     const haHigh = Math.max(cur.high, haOpen, haClose);
     const haLow = Math.min(cur.low, haOpen, haClose);
-    out.push({ time: cur.time, open: haOpen, high: haHigh, low: haLow, close: haClose, volume: cur.volume, closed: cur.closed });
+    out.push({ time: cur.time, open: haOpen, high: haHigh, low: haLow, close: haClose, volume: cur.volume, takerBuyVolume: cur.takerBuyVolume, closed: cur.closed });
     prevHAOpen = haOpen;
     prevHAClose = haClose;
   }
@@ -60,7 +69,7 @@ function toHeikinOne(cur: Kline, prevHAOpen: number, prevHAClose: number, isFirs
   const haOpen = isFirst ? (cur.open + cur.close) / 2 : (prevHAOpen + prevHAClose) / 2;
   const haHigh = Math.max(cur.high, haOpen, haClose);
   const haLow = Math.min(cur.low, haOpen, haClose);
-  return { time: cur.time, open: haOpen, high: haHigh, low: haLow, close: haClose, volume: cur.volume, closed: cur.closed };
+  return { time: cur.time, open: haOpen, high: haHigh, low: haLow, close: haClose, volume: cur.volume, takerBuyVolume: cur.takerBuyVolume, closed: cur.closed };
 }
 
 /** Build HA series and the closed-bar anchor used for the still-open candle.
@@ -276,12 +285,6 @@ interface Props {
   /** Register this chart's time scale so siblings can mirror zoom/pan. */
   registerTimeScale?: (api: ITimeScaleApi<Time> | null) => void;
   siblingScales?: React.MutableRefObject<ITimeScaleApi<Time>[]>;
-  /** Register this chart's right price scale so siblings mirror vertical range. */
-  registerPriceScale?: (api: IPriceScaleApi | null) => void;
-  siblingPriceScales?: React.MutableRefObject<IPriceScaleApi[]>;
-  /** Shared boolean lock that prevents echo-loops when sibling price scales
-   *  sync each other via the RAF polling mechanism. */
-  priceScaleLock?: React.MutableRefObject<boolean>;
 }
 
 export default function Chart({
@@ -295,13 +298,11 @@ export default function Chart({
   customLevels = [],
   registerTimeScale,
   siblingScales,
-  registerPriceScale,
-  siblingPriceScales,
-  priceScaleLock,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const deltaRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   /** Invisible future timestamps so the axis labels 16:00→20:00 without
    *  sitting on the candle series (LWC update() can only touch the last point). */
   const futureRef = useRef<ISeriesApi<"Line"> | null>(null);
@@ -341,6 +342,9 @@ export default function Chart({
   const [chartReady, setChartReady] = useState(false);
   const [lastPrice, setLastPrice] = useState<number | null>(null);
   const [change, setChange] = useState<number | null>(null);
+  const [deltaHover, setDeltaHover] = useState<DeltaHover | null>(null);
+  const [footprintEnabled, setFootprintEnabled] = useState(true);
+  const footprintEnabledRef = useRef(true);
 
   // OHLC hover legend (TradingView style) — shown on every chart.
   const [hover, setHover] = useState<{
@@ -384,6 +388,37 @@ export default function Chart({
 
   /** Candle series the user actually sees — raw OHLC or Heikin Ashi. */
   const displayedBars = (raw: Kline[]): Kline[] => (heikin ? toHeikin(raw) : raw);
+
+  /** Binance taker-buy base volume minus the remaining (taker-sell) volume. */
+  const candleDelta = (bar: Kline) => 2 * bar.takerBuyVolume - bar.volume;
+
+  const createDeltaSeries = () => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const pane = chart.panes()[1] ?? chart.addPane();
+    pane.setHeight(64);
+    const delta = pane.addSeries(HistogramSeries, {
+      base: 0,
+      priceScaleId: "delta",
+      priceLineVisible: false,
+      lastValueVisible: false,
+      priceFormat: { type: "price", precision: 0, minMove: 1 },
+    });
+    deltaRef.current = delta;
+    pane.priceScale("delta").applyOptions({
+      visible: false,
+      autoScale: true,
+      scaleMargins: { top: 0.16, bottom: 0.12 },
+    });
+    delta.setData(cacheRef.current.map((bar) => {
+      const value = candleDelta(bar);
+      return {
+        time: bar.time as Time,
+        value,
+        color: value >= 0 ? "#26a69a" : "#ef5350",
+      };
+    }));
+  };
 
   /** Paint every EMA from the displayed series close (raw or HA). */
   const paintEmas = (bars: Kline[]) => {
@@ -483,9 +518,6 @@ export default function Chart({
       if (sibling !== ts) sibling.setVisibleLogicalRange(range);
     }
     rightScaleRef.current?.setAutoScale(true);
-    for (const sibling of siblingPriceScales?.current ?? []) {
-      if (sibling !== rightScaleRef.current) sibling.setAutoScale(true);
-    }
     requestAnimationFrame(() => {
       suppressTimeSyncRef.current = false;
     });
@@ -506,6 +538,11 @@ export default function Chart({
         textColor: "#787b87",
         fontSize: 10,
         fontFamily: "'JetBrains Mono', ui-monospace, SFMono-Regular, monospace",
+        panes: {
+          enableResize: false,
+          separatorColor: "rgba(120, 123, 134, 0.24)",
+          separatorHoverColor: "rgba(120, 123, 134, 0.24)",
+        },
         // Hide the TradingView attribution watermark.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         attributionLogo: false as any,
@@ -518,7 +555,7 @@ export default function Chart({
       crosshair: {
         mode: CrosshairMode.Normal,
         vertLine: { color: "#787b86", width: 1, style: 1, labelBackgroundColor: "#2a2e39" },
-        horzLine: { color: "#787b86", width: 1, style: 1, labelBackgroundColor: "#2a2e39" },
+        horzLine: { color: "rgba(120, 123, 134, 0.22)", width: 1, style: 1, labelBackgroundColor: "#2a2e39" },
       },
       localization: makeLocalization(tz),
       rightPriceScale: {
@@ -561,7 +598,27 @@ export default function Chart({
     const right = chart.priceScale("right");
     rightScaleRef.current = right;
 
-    // Single series: candles + EMAs. No volume.
+    const refs: ISeriesApi<"Line">[] = new Array(emas.length);
+    const addEma = (period: number) => {
+      const color = EMA_COLOR[period] ?? "#ffffff";
+      const width = EMA_LINE_WIDTH[period] ?? 2;
+      refs[emas.indexOf(period)] = chart.addSeries(LineSeries, {
+        color,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        lineWidth: width as any,
+        lineStyle: LineStyle.Solid,
+        pointMarkersVisible: false,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        priceFormat: PRICE_FORMAT,
+        crosshairMarkerVisible: false,
+      });
+    };
+    for (const period of emas) {
+      if (period >= 50) addEma(period);
+    }
+
+    // Candles render above the slow EMAs; fast EMAs are added after candles.
     const candle = chart.addSeries(CandlestickSeries, {
       upColor: "#26a69a",
       downColor: "#ef5350",
@@ -574,6 +631,8 @@ export default function Chart({
     });
     candleRef.current = candle;
 
+    if (footprintEnabledRef.current) createDeltaSeries();
+
     const futureLine = chart.addSeries(LineSeries, {
       color: "rgba(0,0,0,0)",
       lineVisible: false,
@@ -585,23 +644,9 @@ export default function Chart({
     });
     futureRef.current = futureLine;
 
-    // EMA line series — solid, no dots/point markers.
-    const refs: ISeriesApi<"Line">[] = emas.map((period) => {
-      const color = EMA_COLOR[period] ?? "#ffffff";
-      const width = EMA_LINE_WIDTH[period] ?? 2;
-      const line = chart.addSeries(LineSeries, {
-        color,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        lineWidth: width as any,
-        lineStyle: LineStyle.Solid,
-        pointMarkersVisible: false,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        priceFormat: PRICE_FORMAT,
-        crosshairMarkerVisible: false,
-      });
-      return line;
-    });
+    for (const period of emas) {
+      if (period < 50) addEma(period);
+    }
     emaRefs.current = refs;
 
     // --- Time-scale sync ----------------------------------------------------
@@ -614,7 +659,6 @@ export default function Chart({
       tOriginating = true;
       try {
         const siblings = siblingScales?.current ?? [];
-        const siblingPrices = siblingPriceScales?.current ?? [];
         const range = ts.getVisibleLogicalRange();
         if (!range) return;
         const cached = cacheRef.current;
@@ -627,9 +671,6 @@ export default function Chart({
         for (const sib of siblings) {
           if (sib && sib !== ts) sib.setVisibleLogicalRange(range);
         }
-        for (const sib of siblingPrices) {
-          if (sib && sib !== right) sib.setAutoScale(true);
-        }
       } finally {
         setTimeout(() => {
           tOriginating = false;
@@ -638,39 +679,47 @@ export default function Chart({
     };
     ts.subscribeVisibleLogicalRangeChange(onTimeRange);
     registerTimeScale?.(ts);
-    registerPriceScale?.(right);
-
-    // ── Price-scale sync via RAF polling ─────────────────────────────────
-    // LWC has no event for manual price-scale drags, so we poll every frame.
-    // When a change is detected and the shared lock is free, we apply the new
-    // range to every sibling and hold the lock for one frame to stop the
-    // sibling's own RAF from echoing the value back.
-    let rafId = 0;
-    if (siblingPriceScales && priceScaleLock) {
-      let lastMin = NaN;
-      let lastMax = NaN;
-      const rafSync = () => {
-        if (!priceScaleLock.current) {
-          const r = right.getVisibleRange();
-          if (r && (r.from !== lastMin || r.to !== lastMax)) {
-            lastMin = r.from;
-            lastMax = r.to;
-            priceScaleLock.current = true;
-            for (const sib of siblingPriceScales.current) {
-              if (sib && sib !== right) {
-                sib.setVisibleRange({ from: r.from, to: r.to });
-              }
-            }
-            requestAnimationFrame(() => { priceScaleLock.current = false; });
-          }
-        }
-        rafId = requestAnimationFrame(rafSync);
-      };
-      rafId = requestAnimationFrame(rafSync);
-    }
 
     // OHLC hover legend — find the bar closest to the cursor's time.
     const onCrosshair = (p: MouseEventParams) => {
+      const time = p.time;
+      const pane = chart.panes()[1];
+      const paneElement = pane?.getHTMLElement();
+      const cellElement = containerRef.current?.parentElement;
+      const deltaSeries = deltaRef.current;
+      if (
+        footprintEnabledRef.current
+        && p.paneIndex === 1
+        && deltaSeries
+        && time != null
+        && paneElement
+        && cellElement
+      ) {
+        const bar = cacheRef.current.find((item) => item.time === (time as number));
+        if (bar) {
+          const value = candleDelta(bar);
+          const x = chart.timeScale().timeToCoordinate(bar.time as Time);
+          const paneRect = paneElement.getBoundingClientRect();
+          const cellRect = cellElement.getBoundingClientRect();
+          const top = paneRect.top - cellRect.top - 1;
+          const left = x == null ? null : paneRect.left - cellRect.left + x;
+          if (left == null) {
+            setDeltaHover(null);
+          } else {
+            setDeltaHover({
+              text: String(Math.trunc(value)),
+              color: value >= 0 ? "#00c853" : "#ef5350",
+              left,
+              top,
+            });
+          }
+        } else {
+          setDeltaHover(null);
+        }
+      } else {
+        setDeltaHover(null);
+      }
+
       if (!p.time) {
         setHover(null);
         return;
@@ -732,7 +781,6 @@ export default function Chart({
     if (el) ro.observe(el);
 
     return () => {
-      if (rafId) cancelAnimationFrame(rafId);
       ro.disconnect();
       el?.removeEventListener("contextmenu", onContext);
       const sibs = siblingScales?.current;
@@ -740,15 +788,10 @@ export default function Chart({
         const i = sibs.indexOf(ts);
         if (i >= 0) sibs.splice(i, 1);
       }
-      const prices = siblingPriceScales?.current;
-      if (prices) {
-        const i = prices.indexOf(right);
-        if (i >= 0) prices.splice(i, 1);
-      }
       registerTimeScale?.(null);
-      registerPriceScale?.(null);
       chart.remove();
       chartRef.current = null;
+      deltaRef.current = null;
       setChartReady(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -861,6 +904,14 @@ export default function Chart({
       // can still mutate the last real bar.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       candleRef.current.setData(series as any);
+      deltaRef.current?.setData(raw.map((bar) => {
+        const value = candleDelta(bar);
+        return {
+          time: bar.time as Time,
+          value,
+          color: value >= 0 ? "#26a69a" : "#ef5350",
+        };
+      }));
       displayCacheRef.current = series;
       if (series.length > 0) {
         const lastBar = series[series.length - 1]!;
@@ -953,6 +1004,12 @@ export default function Chart({
       // Last point on the candle series is the live bar, so update() applies.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       candleRef.current.update(candlePayload as any);
+      const deltaValue = candleDelta(bar);
+      deltaRef.current?.update({
+        time: timeSec as Time,
+        value: deltaValue,
+        color: deltaValue >= 0 ? "#26a69a" : "#ef5350",
+      });
       if (isNewBar && futureRef.current) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         futureRef.current.setData(futureWhitespace(timeSec, interval) as any);
@@ -1033,6 +1090,14 @@ export default function Chart({
       displayCacheRef.current = series;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       candleRef.current.setData(series as any);
+      deltaRef.current?.setData(raw.map((bar) => {
+        const value = candleDelta(bar);
+        return {
+          time: bar.time as Time,
+          value,
+          color: value >= 0 ? "#26a69a" : "#ef5350",
+        };
+      }));
       if (series.length > 0) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         futureRef.current?.setData(
@@ -1081,18 +1146,46 @@ export default function Chart({
     );
   });
 
+  const toggleFootprint = () => {
+    const next = !footprintEnabledRef.current;
+    footprintEnabledRef.current = next;
+    setFootprintEnabled(next);
+    const chart = chartRef.current;
+    if (next) {
+      createDeltaSeries();
+    } else {
+      setDeltaHover(null);
+      const delta = deltaRef.current;
+      if (chart && delta) {
+        chart.removeSeries(delta);
+        if (chart.panes().length > 1) chart.removePane(1);
+      }
+      deltaRef.current = null;
+    }
+  };
+
   return (
     <>
-      {/* Header — symbol + venue + tf + clickable EMA chips. Shown on every
-          cell (3m and both 1m charts). */}
+      {/* Header — symbol + timeframe + clickable EMA and footprint toggles. */}
       <div className="cell-header">
         <span className="symbol">BTCUSDT</span>
-        <span className="venue">Binance Futures</span>
         <span className="tf">
           {interval}
           {heikin ? " · Heikin Ashi" : ""}
         </span>
         <div className="ema-group">{emaLegend}</div>
+        <button
+          type="button"
+          className={`footprint-chip${footprintEnabled ? " active" : " off"}`}
+          aria-pressed={footprintEnabled}
+          title={`Footprint delta — click to ${footprintEnabled ? "hide" : "show"}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            toggleFootprint();
+          }}
+        >
+          footprint
+        </button>
         {hover && (
           <div className="ohlc-bar">
             <span><b>O</b> {fmt(hover.open)}</span>
@@ -1115,6 +1208,19 @@ export default function Chart({
         className="chart-canvas"
         style={{ width: "100%", height: "100%", cursor: "crosshair" }}
       />
+      {deltaHover && (
+        <div
+          className="delta-hover-value"
+          aria-hidden="true"
+          style={{
+            left: deltaHover.left,
+            top: deltaHover.top,
+            color: deltaHover.color,
+          }}
+        >
+          {deltaHover.text}
+        </div>
+      )}
 
       {/* Right-click context menu — "Reset price scale". */}
       {contextMenu && (

@@ -245,7 +245,17 @@ html, body {
   cursor: crosshair !important;
 }
 
-/* --- header row: symbol / venue / tf / EMA chips / price badge ----------- */
+.delta-hover-value {
+  position: absolute;
+  z-index: 8;
+  font: 600 11px/14px "JetBrains Mono", ui-monospace, monospace;
+  white-space: nowrap;
+  transform: translate(-50%, -100%);
+  pointer-events: none;
+  text-shadow: 0 1px 2px #0b0e13;
+}
+
+/* --- header row: symbol / tf / EMA chips / price badge ------------------- */
 .cell-header {
   position: absolute;
   top: 4px;
@@ -262,7 +272,6 @@ html, body {
   cursor: default;
 }
 .cell-header .symbol { color: #ffffff; }
-.cell-header .venue { color: #787b87; font-weight: 400; }
 .cell-header .tf { color: #ffffff; }
 .cell-header .badge {
   display: inline-flex;
@@ -305,6 +314,25 @@ html, body {
 .ema-chip:active { transform: scale(0.92); }
 .ema-chip.off { cursor: pointer; }
 .ema-chip .chip-num { color: inherit; }
+
+.footprint-chip {
+  height: 16px;
+  border: 1px solid #c8c8c8;
+  border-radius: 3px;
+  padding: 0 5px;
+  font: 700 8px/1 "JetBrains Mono", ui-monospace, monospace;
+  cursor: pointer;
+}
+.footprint-chip.active {
+  background: #f2f2f2;
+  color: #0b0e13;
+}
+.footprint-chip.off {
+  border-color: #454954;
+  background: #1a1f29;
+  color: #787b87;
+}
+.footprint-chip:hover { filter: brightness(1.12); }
 
 /* OHLC hover legend — same row as symbol / EMA chips. */
 .ohlc-bar {

@@ -24,12 +24,14 @@ export interface Kline {
   low: number;
   close: number;
   volume: number;
+  takerBuyVolume: number;
   closed: boolean;
 }
 
 // Binance kline tuple layout (see /api/v1/klines response):
 //   [0] open time(ms), [1] open, [2] high, [3] low, [4] close,
-//   [5] volume, [6] close time(ms), [7] quote asset volume, [8] trades...
+//   [5] volume, [6] close time(ms), [7] quote asset volume, [8] trades,
+//   [9] taker buy base asset volume...
 // NOTE: element [6] is the bar's CLOSE TIME in ms — NOT a boolean.  A bar is
 // considered closed only when its close-time is strictly in the past.  Using
 // Boolean(Number(closeTimeMs)) would always be true (any non-zero number →
@@ -41,6 +43,7 @@ const KLINE_LOW_FIELD = 3 as const;
 const KLINE_CLOSE_FIELD = 4 as const;
 const KLINE_VOLUME_FIELD = 5 as const;
 const KLINE_CLOSE_TIME = 6 as const;
+const KLINE_TAKER_BUY_VOLUME = 9 as const;
 
 function parseKline(raw: (string | number)[]): Kline {
   // A bar is closed when its close-time is in the past.
@@ -52,6 +55,7 @@ function parseKline(raw: (string | number)[]): Kline {
     low: Number(raw[KLINE_LOW_FIELD]),
     close: Number(raw[KLINE_CLOSE_FIELD]),
     volume: Number(raw[KLINE_VOLUME_FIELD]),
+    takerBuyVolume: Number(raw[KLINE_TAKER_BUY_VOLUME]),
     closed: closeTimeMs < Date.now(),
   };
 }
@@ -200,7 +204,7 @@ export function streamKlines(
       try {
         const msg = JSON.parse(data.toString()) as {
           stream?: string;
-          data?: { e?: string; k?: { t: number; o: string; h: string; l: string; c: string; v: string; x: boolean } };
+          data?: { e?: string; k?: { t: number; o: string; h: string; l: string; c: string; v: string; V: string; x: boolean } };
         };
         const stream = msg.stream ?? "";
         const k = msg.data?.k;
@@ -214,6 +218,7 @@ export function streamKlines(
           low: Number(k.l),
           close: Number(k.c),
           volume: Number(k.v),
+          takerBuyVolume: Number(k.V),
           closed: k.x,
         });
       } catch (err) {
@@ -265,6 +270,7 @@ export function streamKlines(
           || previous.low !== latest.low
           || previous.close !== latest.close
           || previous.volume !== latest.volume
+          || previous.takerBuyVolume !== latest.takerBuyVolume
           || previous.closed !== latest.closed;
         if (changed) onEvent(interval, latest);
         lastFallbackTime.set(interval, latest.time);

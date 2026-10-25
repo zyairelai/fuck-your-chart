@@ -8,6 +8,7 @@ export interface Kline {
   low: number;
   close: number;
   volume: number;
+  takerBuyVolume: number;
   closed: boolean;
 }
 

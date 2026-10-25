@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import type { ITimeScaleApi, IPriceScaleApi, Time } from "lightweight-charts";
+import type { ITimeScaleApi, Time } from "lightweight-charts";
 import Chart from "../components/Chart";
 import TopBar from "../components/TopBar";
 import type { TzOffset, Zones, LineToggles, CustomLevel, CustomLevelColor } from "../components/Chart";
@@ -21,20 +21,13 @@ const DEFAULT_TOGGLES: LineToggles = {
 };
 
 export default function Page() {
-  // ── Right column: 1m raw (top) + 1m HA (bottom) — sync time & price ────
+  // ── Right column: 1m raw (top) + 1m HA (bottom) — sync time ────────────
   const oneMinuteTimeScales = useRef<ITimeScaleApi<Time>[]>([]);
-  const oneMinutePriceScales = useRef<IPriceScaleApi[]>([]);
-  const rightPriceScaleLock = useRef(false);
 
   const registerRightTime = (api: ITimeScaleApi<Time> | null) => {
     if (api && !oneMinuteTimeScales.current.includes(api))
       oneMinuteTimeScales.current.push(api);
   };
-  const registerRightPrice = (api: IPriceScaleApi | null) => {
-    if (api && !oneMinutePriceScales.current.includes(api))
-      oneMinutePriceScales.current.push(api);
-  };
-
   const [tz, setTz] = useState<TzOffset>(8);
   const [zones, setZones] = useState<Zones | null>(null);
   const [toggles, setToggles] = useState<LineToggles>(DEFAULT_TOGGLES);
@@ -87,9 +80,6 @@ export default function Page() {
             customLevels={customLevels}
             registerTimeScale={registerRightTime}
             siblingScales={oneMinuteTimeScales}
-            registerPriceScale={registerRightPrice}
-            siblingPriceScales={oneMinutePriceScales}
-            priceScaleLock={rightPriceScaleLock}
           />
         </div>
         <div className="cell">
@@ -115,9 +105,6 @@ export default function Page() {
             customLevels={customLevels}
             registerTimeScale={registerRightTime}
             siblingScales={oneMinuteTimeScales}
-            registerPriceScale={registerRightPrice}
-            siblingPriceScales={oneMinutePriceScales}
-            priceScaleLock={rightPriceScaleLock}
           />
         </div>
       </main>
