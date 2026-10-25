@@ -37,6 +37,8 @@ Each chart subscribes to its own interval, calls `series.update(k)` for the open
 
 Every chart also has a fixed lower footprint-delta histogram, enabled by default and controlled by the `footprint` header toggle. Delta is Binance taker-buy BTC volume minus taker-sell BTC volume for each candle; bars are green for positive delta and red for negative delta. Hover a bar to show its signed integer delta above the bar. Turning the toggle off removes the entire pane. The pane divider is subtle and cannot be dragged.
 
+The two 1-minute charts on the right share their crosshair: hovering either chart aligns the other chart to the same candle time and updates both OHLC and footprint-delta readouts.
+
 ## A note on the data source
 
 History is loaded from the **futures perp** REST endpoint (the user asked for "BTCUSDT futures perp"). Live ticks come from the **spot** WebSocket — in the sandbox where this image was built, the futures WS server pushes nothing for the `kline` topic (other topics like `trade` and `depth` work fine). Spot and futures perp trade at essentially the same price (basis is sub-basis-point), so the charts look identical to the eye. If you want pure futures WS live ticks, change `SPOT_WS` to `FAPI_WS` in `server/src/binance.ts` — the rest of the pipeline is agnostic to the source.

@@ -43,6 +43,9 @@ interface DeltaHover {
   top: number;
 }
 
+type LinkedCrosshairId = "raw" | "heikin";
+type LinkedCrosshairSync = (time: number | null) => void;
+
 /** Heikin Ashi transform — applied client-side from the regular candles. */
 function toHeikin(c: Kline[]): Kline[] {
   const out: Kline[] = [];
@@ -285,6 +288,12 @@ interface Props {
   /** Register this chart's time scale so siblings can mirror zoom/pan. */
   registerTimeScale?: (api: ITimeScaleApi<Time> | null) => void;
   siblingScales?: React.MutableRefObject<ITimeScaleApi<Time>[]>;
+  linkedCrosshairId?: LinkedCrosshairId;
+  registerLinkedCrosshair?: (
+    id: LinkedCrosshairId,
+    sync: LinkedCrosshairSync | null,
+  ) => void;
+  onLinkedCrosshair?: (id: LinkedCrosshairId, time: number | null) => void;
 }
 
 export default function Chart({
@@ -298,6 +307,9 @@ export default function Chart({
   customLevels = [],
   registerTimeScale,
   siblingScales,
+  linkedCrosshairId,
+  registerLinkedCrosshair,
+  onLinkedCrosshair,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -338,6 +350,8 @@ export default function Chart({
   const pinnedToRightRef = useRef(true);
   /** Skip 1m sibling range copies while we are still placing the default view. */
   const suppressTimeSyncRef = useRef(true);
+  const suppressLinkedCrosshairRef = useRef(false);
+  const linkedCrosshairGenerationRef = useRef(0);
   const [status, setStatus] = useState<"connecting" | "live" | "off">("connecting");
   const [chartReady, setChartReady] = useState(false);
   const [lastPrice, setLastPrice] = useState<number | null>(null);
@@ -391,6 +405,65 @@ export default function Chart({
 
   /** Binance taker-buy base volume minus the remaining (taker-sell) volume. */
   const candleDelta = (bar: Kline) => 2 * bar.takerBuyVolume - bar.volume;
+
+  const updateHoverAtTime = (time: number | null) => {
+    if (time == null) {
+      setHover(null);
+      setDeltaHover(null);
+      return;
+    }
+
+    const displayed = displayCacheRef.current;
+    const lastBar = displayed[displayed.length - 1];
+    if (!lastBar || time > lastBar.time) {
+      setHover(null);
+      setDeltaHover(null);
+      return;
+    }
+
+    let found: Kline | undefined;
+    for (let i = displayed.length - 1; i >= 0; i--) {
+      const bar = displayed[i]!;
+      if (bar.time <= time) {
+        found = bar;
+        break;
+      }
+    }
+    if (found) {
+      const index = displayed.indexOf(found);
+      const previous = index > 0 ? displayed[index - 1]! : null;
+      const baseline = previous ? previous.close : found.open;
+      setHover({
+        open: found.open,
+        high: found.high,
+        low: found.low,
+        close: found.close,
+        change: ((found.close - baseline) / (baseline || 1)) * 100,
+      });
+    } else {
+      setHover(null);
+    }
+
+    const rawBar = cacheRef.current.find((bar) => bar.time === time);
+    const chart = chartRef.current;
+    const paneElement = chart?.panes()[1]?.getHTMLElement();
+    const cellElement = containerRef.current?.parentElement;
+    const x = chart?.timeScale().timeToCoordinate(time as Time);
+    if (!footprintEnabledRef.current || !rawBar || !paneElement || !cellElement || x == null) {
+      setDeltaHover(null);
+      return;
+    }
+
+    const paneRect = paneElement.getBoundingClientRect();
+    const cellRect = cellElement.getBoundingClientRect();
+    const value = candleDelta(rawBar);
+    setDeltaHover({
+      text: String(Math.trunc(value)),
+      color: value >= 0 ? "#00c853" : "#ef5350",
+      left: paneRect.left - cellRect.left + x,
+      top: paneRect.top - cellRect.top - 1,
+    });
+  };
 
   const createDeltaSeries = () => {
     const chart = chartRef.current;
@@ -661,6 +734,9 @@ export default function Chart({
         const siblings = siblingScales?.current ?? [];
         const range = ts.getVisibleLogicalRange();
         if (!range) return;
+        if (interval === "1m" && siblingScales) {
+          rightScaleRef.current?.setAutoScale(true);
+        }
         const cached = cacheRef.current;
         const totalBars = cached.length + futureBarCount(interval) + RIGHT_GAP_BARS;
         const distFromRight = totalBars - range.to;
@@ -682,80 +758,43 @@ export default function Chart({
 
     // OHLC hover legend — find the bar closest to the cursor's time.
     const onCrosshair = (p: MouseEventParams) => {
-      const time = p.time;
-      const pane = chart.panes()[1];
-      const paneElement = pane?.getHTMLElement();
-      const cellElement = containerRef.current?.parentElement;
-      const deltaSeries = deltaRef.current;
+      const time = p.time == null ? null : p.time as number;
+      updateHoverAtTime(time);
       if (
-        footprintEnabledRef.current
-        && p.paneIndex === 1
-        && deltaSeries
-        && time != null
-        && paneElement
-        && cellElement
+        linkedCrosshairId
+        && onLinkedCrosshair
+        && !suppressLinkedCrosshairRef.current
       ) {
-        const bar = cacheRef.current.find((item) => item.time === (time as number));
-        if (bar) {
-          const value = candleDelta(bar);
-          const x = chart.timeScale().timeToCoordinate(bar.time as Time);
-          const paneRect = paneElement.getBoundingClientRect();
-          const cellRect = cellElement.getBoundingClientRect();
-          const top = paneRect.top - cellRect.top - 1;
-          const left = x == null ? null : paneRect.left - cellRect.left + x;
-          if (left == null) {
-            setDeltaHover(null);
-          } else {
-            setDeltaHover({
-              text: String(Math.trunc(value)),
-              color: value >= 0 ? "#00c853" : "#ef5350",
-              left,
-              top,
-            });
-          }
-        } else {
-          setDeltaHover(null);
-        }
-      } else {
-        setDeltaHover(null);
+        onLinkedCrosshair(linkedCrosshairId, time);
       }
-
-      if (!p.time) {
-        setHover(null);
-        return;
-      }
-      const t = p.time as number;
-      const cached = displayCacheRef.current;
-      const lastReal = cached.length > 0 ? cached[cached.length - 1]!.time : 0;
-      if (lastReal > 0 && t > lastReal) {
-        setHover(null);
-        return;
-      }
-      let found: Kline | undefined;
-      for (let i = cached.length - 1; i >= 0; i--) {
-        const b = cached[i]!;
-        if (b.time <= t) {
-          found = b;
-          break;
-        }
-      }
-      if (!found) {
-        setHover(null);
-        return;
-      }
-      const idx = cached.indexOf(found);
-      const prev = idx > 0 ? cached[idx - 1]! : null;
-      const baseline = prev ? prev.close : found.open;
-      const delta = ((found.close - baseline) / (baseline || 1)) * 100;
-      setHover({
-        open: found.open,
-        high: found.high,
-        low: found.low,
-        close: found.close,
-        change: delta,
-      });
     };
     chart.subscribeCrosshairMove(onCrosshair);
+
+    const syncLinkedCrosshair: LinkedCrosshairSync = (time) => {
+      const generation = ++linkedCrosshairGenerationRef.current;
+      suppressLinkedCrosshairRef.current = true;
+      if (time == null) {
+        chart.clearCrosshairPosition();
+        updateHoverAtTime(null);
+      } else {
+        const bar = displayCacheRef.current.find((item) => item.time === time);
+        if (bar && candleRef.current) {
+          chart.setCrosshairPosition(bar.close, time as Time, candleRef.current);
+          updateHoverAtTime(time);
+        } else {
+          chart.clearCrosshairPosition();
+          updateHoverAtTime(null);
+        }
+      }
+      requestAnimationFrame(() => {
+        if (linkedCrosshairGenerationRef.current === generation) {
+          suppressLinkedCrosshairRef.current = false;
+        }
+      });
+    };
+    if (linkedCrosshairId) {
+      registerLinkedCrosshair?.(linkedCrosshairId, syncLinkedCrosshair);
+    }
 
     // Right-click anywhere in the chart -> open the custom context menu.
     const el = containerRef.current;
@@ -789,6 +828,9 @@ export default function Chart({
         if (i >= 0) sibs.splice(i, 1);
       }
       registerTimeScale?.(null);
+      if (linkedCrosshairId) {
+        registerLinkedCrosshair?.(linkedCrosshairId, null);
+      }
       chart.remove();
       chartRef.current = null;
       deltaRef.current = null;

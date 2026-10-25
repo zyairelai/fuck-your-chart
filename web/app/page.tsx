@@ -6,6 +6,9 @@ import Chart from "../components/Chart";
 import TopBar from "../components/TopBar";
 import type { TzOffset, Zones, LineToggles, CustomLevel, CustomLevelColor } from "../components/Chart";
 
+type LinkedCrosshairId = "raw" | "heikin";
+type LinkedCrosshairSync = (time: number | null) => void;
+
 const ALL_EMAS = [10, 20, 50, 200];
 /** 5m: 50 + 200 on by default; 10 + 20 off. */
 const FIVE_M_EMA_OFF = [10, 20];
@@ -23,10 +26,24 @@ const DEFAULT_TOGGLES: LineToggles = {
 export default function Page() {
   // ── Right column: 1m raw (top) + 1m HA (bottom) — sync time ────────────
   const oneMinuteTimeScales = useRef<ITimeScaleApi<Time>[]>([]);
+  const oneMinuteCrosshairSync = useRef<Record<LinkedCrosshairId, LinkedCrosshairSync | null>>({
+    raw: null,
+    heikin: null,
+  });
 
   const registerRightTime = (api: ITimeScaleApi<Time> | null) => {
     if (api && !oneMinuteTimeScales.current.includes(api))
       oneMinuteTimeScales.current.push(api);
+  };
+  const registerRightCrosshair = (
+    id: LinkedCrosshairId,
+    sync: LinkedCrosshairSync | null,
+  ) => {
+    oneMinuteCrosshairSync.current[id] = sync;
+  };
+  const syncRightCrosshair = (source: LinkedCrosshairId, time: number | null) => {
+    const target = source === "raw" ? "heikin" : "raw";
+    oneMinuteCrosshairSync.current[target]?.(time);
   };
   const [tz, setTz] = useState<TzOffset>(8);
   const [zones, setZones] = useState<Zones | null>(null);
@@ -80,6 +97,9 @@ export default function Page() {
             customLevels={customLevels}
             registerTimeScale={registerRightTime}
             siblingScales={oneMinuteTimeScales}
+            linkedCrosshairId="raw"
+            registerLinkedCrosshair={registerRightCrosshair}
+            onLinkedCrosshair={syncRightCrosshair}
           />
         </div>
         <div className="cell">
@@ -105,6 +125,9 @@ export default function Page() {
             customLevels={customLevels}
             registerTimeScale={registerRightTime}
             siblingScales={oneMinuteTimeScales}
+            linkedCrosshairId="heikin"
+            registerLinkedCrosshair={registerRightCrosshair}
+            onLinkedCrosshair={syncRightCrosshair}
           />
         </div>
       </main>
