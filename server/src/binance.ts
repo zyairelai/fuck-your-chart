@@ -13,8 +13,8 @@ export const FAPI_WS = "wss://fstream.binance.com";
 export const SPOT_WS = "wss://stream.binance.com:9443";
 const WS_IDLE_TIMEOUT_MS = 60_000;
 const WS_WATCHDOG_INTERVAL_MS = 15_000;
-const WS_FALLBACK_IDLE_MS = 1_000;
-const REST_FALLBACK_POLL_MS = 500;
+const WS_FALLBACK_IDLE_MS = 500;
+const REST_FALLBACK_POLL_MS = 200;
 
 /** A candle in lightweight-charts-friendly shape (UTC seconds). */
 export interface Kline {

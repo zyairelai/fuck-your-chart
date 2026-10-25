@@ -262,8 +262,16 @@ export default function TopBar({ onDateChange, toggles, onToggle, onAddCustom, o
         className="custom-level-group"
         onSubmit={(e) => {
           e.preventDefault();
-          const n = Number(customInput.trim());
-          if (!Number.isFinite(n) || n <= 0) return;
+          const value = customInput.trim();
+          if (!/^(?:\d+\.?\d*|\.\d+)$/.test(value)) {
+            setCustomInput("");
+            return;
+          }
+          const n = Number(value);
+          if (!Number.isFinite(n) || n <= 0) {
+            setCustomInput("");
+            return;
+          }
           onAddCustom(Math.round(n * 2) / 2, customColor);
           setCustomInput("");
         }}
@@ -296,7 +304,10 @@ export default function TopBar({ onDateChange, toggles, onToggle, onAddCustom, o
         <input
           className="custom-level-input"
           value={customInput}
-          onChange={(e) => setCustomInput(e.target.value)}
+          onChange={(e) => {
+            const value = e.target.value;
+            setCustomInput(/^\d*\.?\d*$/.test(value) ? value : "");
+          }}
           placeholder="CUSTOM"
           inputMode="decimal"
           title={`Add a custom price level (${customColor})`}
