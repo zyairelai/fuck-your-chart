@@ -237,12 +237,12 @@ function makeLocalization(tz: TzOffset) {
 }
 
 function formatPrice(price: number): string {
-  return Number.isInteger(price) ? price.toFixed(0) : price.toFixed(1);
+  return String(Math.round(price));
 }
 
 const PRICE_FORMAT = {
   type: "custom" as const,
-  minMove: 0.1,
+  minMove: 1,
   formatter: formatPrice,
 };
 
@@ -356,7 +356,7 @@ export default function Chart({
   heikin = false,
   emas = [],
   defaultEmaOff = [],
-  defaultFootprintEnabled = true,
+  defaultFootprintEnabled = false,
   tz = 0,
   zones = null,
   lineToggles = { weekly: true, monday: false, pdhlm: true, fibb: false, weekend: false },
@@ -422,6 +422,15 @@ export default function Chart({
   const linkedCrosshairFrameRef = useRef<number | null>(null);
   const linkedCrosshairActiveRef = useRef(false);
   const pointerInsideChartRef = useRef(false);
+  const deltaHoverPositionFrameRef = useRef<number | null>(null);
+  /** Cached pane1 offsetTop — refreshed on resize, used to avoid layout reflow on every crosshair move. */
+  const pane1OffsetTopRef = useRef<number>(0);
+  /** rAF-throttle: pending candle payload waiting to be flushed to the series. */
+  const pendingCandleRef = useRef<Kline | null>(null);
+  /** rAF-throttle: pending per-EMA values {period → value} waiting to flush. */
+  const pendingEmaRef = useRef<Map<number, { time: number; value: number }>>(new Map());
+  /** rAF handle for the candle+EMA flush. */
+  const paintRafRef = useRef<number | null>(null);
   const [status, setStatus] = useState<"connecting" | "live" | "off">("connecting");
   const [chartReady, setChartReady] = useState(false);
   const ohlcOpenRef = useRef<HTMLSpanElement | null>(null);
@@ -592,20 +601,35 @@ export default function Chart({
     }
 
     const key = String(time);
-    if (key === deltaHoverKeyRef.current) return;
-    const x = chart.timeScale().timeToCoordinate(time as Time);
-    const paneElement = chart.panes()[1]?.getHTMLElement();
-    if (x == null || !paneElement) {
-      deltaHoverKeyRef.current = null;
-      if (deltaElement.style.display !== "none") deltaElement.style.display = "none";
-      return;
+    // Only update text content when the bar changes; position update is
+    // batched in a rAF to avoid layout-thrashing on every pixel of mouse move.
+    const barChanged = key !== deltaHoverKeyRef.current;
+    if (barChanged) {
+      deltaHoverKeyRef.current = key;
+      deltaElement.textContent = hoverData.delta;
+      deltaElement.style.color = hoverData.deltaColor;
     }
-    deltaHoverKeyRef.current = key;
-    deltaElement.textContent = hoverData.delta;
-    deltaElement.style.color = hoverData.deltaColor;
-    deltaElement.style.left = `${x}px`;
-    deltaElement.style.top = `${paneElement.offsetTop - 1}px`;
-    deltaElement.style.display = "block";
+    // Schedule a position update — reads offsetTop which forces a layout
+    // reflow, so we defer it to avoid blocking the crosshair event loop.
+    if (deltaHoverPositionFrameRef.current === null) {
+      deltaHoverPositionFrameRef.current = requestAnimationFrame(() => {
+        deltaHoverPositionFrameRef.current = null;
+        const currentKey = deltaHoverKeyRef.current;
+        if (!currentKey) { return; }
+        const x = chart.timeScale().timeToCoordinate(Number(currentKey) as Time);
+        const paneElement = chart.panes()[1]?.getHTMLElement();
+        if (x == null || !paneElement) {
+          if (deltaElement.style.display !== "none") deltaElement.style.display = "none";
+          return;
+        }
+        deltaElement.style.left = `${x}px`;
+        deltaElement.style.top = `${paneElement.offsetTop - 1}px`;
+        if (deltaElement.style.display === "none") deltaElement.style.display = "block";
+      });
+    } else if (barChanged) {
+      // Show immediately (already scheduled a position rAF)
+      if (deltaElement.style.display === "none") deltaElement.style.display = "block";
+    }
   };
 
   const createDeltaSeries = () => {
@@ -1138,6 +1162,14 @@ export default function Chart({
         cancelAnimationFrame(zoneLabelFrameRef.current);
         zoneLabelFrameRef.current = null;
       }
+      if (deltaHoverPositionFrameRef.current !== null) {
+        cancelAnimationFrame(deltaHoverPositionFrameRef.current);
+        deltaHoverPositionFrameRef.current = null;
+      }
+      if (paintRafRef.current !== null) {
+        cancelAnimationFrame(paintRafRef.current);
+        paintRafRef.current = null;
+      }
       if (priceScaleFrame !== null) cancelAnimationFrame(priceScaleFrame);
       pendingLinkedCrosshairRef.current = null;
       el?.removeEventListener("dblclick", onDoubleClick);
@@ -1439,19 +1471,14 @@ export default function Chart({
         candlePayload = ha;
       }
 
-      // ── Series update ─────────────────────────────────────────────────────
-      // series.update() with the same timestamp overwrites the bar in-place;
-      // a greater timestamp appends a new bar to the right.
-      // Last point on the candle series is the live bar, so update() applies.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      candleRef.current.update(candlePayload as any);
+      // ── Series update — rAF-throttled ─────────────────────────────────────
+      // Buffer the latest payload; a single rAF flushes it to the LWC canvas.
+      // This collapses multiple ticks that arrive within one paint frame into a
+      // single redraw, eliminating the candle-flash caused by rapid Binance
+      // pushes (≈250 ms apart) hitting the same animation frame.
+      pendingCandleRef.current = candlePayload;
       scheduleZoneLabelVisibilityUpdate();
-      const deltaValue = candleDelta(bar);
-      deltaRef.current?.update({
-        time: timeSec as Time,
-        value: deltaValue,
-        color: deltaValue >= 0 ? "#26a69a" : "#ef5350",
-      });
+
       if (isNewBar && futureRef.current) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         futureRef.current.setData(futureWhitespace(timeSec, interval) as any);
@@ -1459,10 +1486,7 @@ export default function Chart({
 
       if (interval === "1m" && !heikin) setTabTitle(bar.close);
 
-      // ── EMA update (from the displayed close: raw or Heikin Ashi) ────────
-      // Incremental: instead of rerunning toHeikin(cached) for every tick
-      // (O(n) per tick with 10k+ bars), we update displayCacheRef in-place
-      // using the already-computed candlePayload.
+      // ── EMA + hover data update ───────────────────────────────────────────
       const displayed = displayCacheRef.current;
       if (isNewBar) {
         displayed.push(candlePayload);
@@ -1475,7 +1499,6 @@ export default function Chart({
       if (displayed.length > 0 && emas.length > 0) {
         for (let i = 0; i < emas.length; i++) {
           const period = emas[i]!;
-          const line = emaRefs.current[i];
           const previous = emaTailRef.current.get(period);
           if (!previous) {
             paintEmas(displayed);
@@ -1484,15 +1507,42 @@ export default function Chart({
           const nextPrevious = isNewBar ? previous.value : previous.previous;
           const alpha = 2 / (period + 1);
           const value = candlePayload.close * alpha + nextPrevious * (1 - alpha);
-          emaTailRef.current.set(period, {
-            time: timeSec,
-            previous: nextPrevious,
-            value,
-          });
-          if (line && emaEnabledRef.current.has(period)) {
-            line.update({ time: timeSec as Time, value });
-          }
+          emaTailRef.current.set(period, { time: timeSec, previous: nextPrevious, value });
+          // buffer EMA value; the rAF flush will call line.update()
+          pendingEmaRef.current.set(period, { time: timeSec, value });
         }
+      }
+
+      // Schedule the actual canvas paint if not already pending.
+      if (paintRafRef.current === null) {
+        paintRafRef.current = requestAnimationFrame(() => {
+          paintRafRef.current = null;
+          // Flush candle.
+          const cp = pendingCandleRef.current;
+          if (cp && candleRef.current) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            candleRef.current.update(cp as any);
+            pendingCandleRef.current = null;
+          }
+          // Flush delta.
+          if (footprintEnabledRef.current && deltaRef.current && cp) {
+            const dv = candleDelta(cp);
+            deltaRef.current.update({
+              time: cp.time as Time,
+              value: dv,
+              color: dv >= 0 ? "#26a69a" : "#ef5350",
+            });
+          }
+          // Flush EMAs.
+          for (const [period, pt] of pendingEmaRef.current) {
+            const idx = emas.indexOf(period);
+            const line = idx >= 0 ? emaRefs.current[idx] : undefined;
+            if (line && emaEnabledRef.current.has(period)) {
+              line.update({ time: pt.time as Time, value: pt.value });
+            }
+          }
+          pendingEmaRef.current.clear();
+        });
       }
 
       // ── Viewport advance ─────────────────────────────────────────────────

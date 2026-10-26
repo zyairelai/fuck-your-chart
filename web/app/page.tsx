@@ -101,8 +101,6 @@ export default function Page() {
     <>
       <TopBar
         onDateChange={onDateChange}
-        mirroredLayout={mirroredLayout}
-        onToggleLayout={() => setMirroredLayout((current) => !current)}
         toggles={toggles}
         onToggle={onToggle}
         customLevelsReady={customLevelsReady}
@@ -118,7 +116,7 @@ export default function Page() {
             interval="5m"
             emas={ALL_EMAS}
             defaultEmaOff={FIVE_M_EMA_OFF}
-            defaultFootprintEnabled
+            defaultFootprintEnabled={false}
             tz={tz}
             zones={zones}
             lineToggles={toggles}
@@ -133,7 +131,7 @@ export default function Page() {
             interval="1m"
             emas={ALL_EMAS}
             defaultEmaOff={ONE_M_EMA_OFF}
-            defaultFootprintEnabled
+            defaultFootprintEnabled={false}
             tz={tz}
             zones={zones}
             lineToggles={toggles}
@@ -145,6 +143,7 @@ export default function Page() {
             linkedCrosshairId="raw"
             registerLinkedCrosshair={registerRightCrosshair}
             onLinkedCrosshair={syncRightCrosshair}
+            onChartDoubleClick={() => setMirroredLayout((current) => !current)}
           />
         </div>
         <div className="cell chart-3m-ha">
@@ -180,6 +179,7 @@ export default function Page() {
             linkedCrosshairId="heikin"
             registerLinkedCrosshair={registerRightCrosshair}
             onLinkedCrosshair={syncRightCrosshair}
+            onChartDoubleClick={() => setMirroredLayout((current) => !current)}
           />
         </div>
       </main>

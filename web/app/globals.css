@@ -42,26 +42,7 @@ html, body {
   margin: 0 2px;
 }
 
-.layout-toggle-btn {
-  appearance: none;
-  width: 28px;
-  height: 28px;
-  border: 1px solid #2a2e39;
-  border-radius: 4px;
-  background: #1e222d;
-  color: #d1d4dc;
-  font-family: inherit;
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1;
-  cursor: pointer;
-}
-.layout-toggle-btn:hover,
-.layout-toggle-btn.active {
-  border-color: #2962ff;
-  color: #fff;
-  background: rgba(41, 98, 255, 0.12);
-}
+
 
 /* --- Timeframe picker (top-bar left) -------------------------------------- */
 .tf-group {
@@ -451,13 +432,14 @@ html, body {
 .ohlc-bar .up { color: #26a69a; }
 .ohlc-bar .down { color: #ef5350; }
 
-/* Global TZ dropdown — fixed bottom-right of the whole screen.
-   One dropdown controls all 4 chart time-axis labels simultaneously. */
+/* Global TZ dropdown — fixed bottom-right, aligned with LWC's time-axis strip.
+   LWC time-axis is 28px tall. Page padding = 4px, cell border = 1px → 5px gap. */
 .global-tz-wrapper {
   position: fixed;
-  bottom: 4px;
-  right: 4px;
+  bottom: 5px;
+  right: 5px;
   z-index: 200;
+  height: 28px;
   display: flex;
   align-items: center;
 }
@@ -466,9 +448,10 @@ html, body {
   border: 1px solid #2a2e39;
   color: #2962ff;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
-  padding: 2px 3px;
+  height: 22px;
+  padding: 0 5px;
   border-radius: 3px;
   cursor: pointer;
   outline: none;

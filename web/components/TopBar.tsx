@@ -51,8 +51,6 @@ function stepDay(dateStr: string, delta: number): string | null {
 interface Props {
   /** Calendar date is the reference day for drawing levels — not the chart window. */
   onDateChange: (date: string) => void;
-  mirroredLayout: boolean;
-  onToggleLayout: () => void;
   toggles: LineToggles;
   onToggle: (key: keyof LineToggles) => void;
   customLevelsReady: boolean;
@@ -63,8 +61,6 @@ interface Props {
 
 export default function TopBar({
   onDateChange,
-  mirroredLayout,
-  onToggleLayout,
   toggles,
   onToggle,
   customLevelsReady,
@@ -181,15 +177,6 @@ export default function TopBar({
 
   return (
     <header className="top-bar">
-      <button
-        type="button"
-        className={`layout-toggle-btn${mirroredLayout ? " active" : ""}`}
-        aria-pressed={mirroredLayout}
-        title={`Switch to ${mirroredLayout ? "standard" : "mirrored"} chart layout`}
-        onClick={onToggleLayout}
-      >
-        ⇄
-      </button>
       {/* Date stepper: < DATE > */}
       <div className="date-controls">
         <div className="date-stepper-container">
