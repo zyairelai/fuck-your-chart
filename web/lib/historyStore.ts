@@ -113,6 +113,9 @@ export function applyLiveKline(interval: string, k: Kline) {
   const last = b.bars[b.bars.length - 1];
   if (last && last.time === k.time) {
     b.bars[b.bars.length - 1] = k;
+  } else if (last && k.time < last.time) {
+    const historicalIndex = b.bars.findIndex((bar) => bar.time === k.time);
+    if (historicalIndex >= 0) b.bars[historicalIndex] = k;
   } else if (!last || k.time > last.time) {
     b.bars.push(k);
   }

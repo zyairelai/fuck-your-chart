@@ -723,6 +723,7 @@ export default function Chart({
 
     suppressTimeSyncRef.current = true;
     pinnedToRightRef.current = true;
+    rightScaleRef.current?.setAutoScale(true);
     const ts = c.timeScale();
     ts.applyOptions({
       barSpacing: TARGET_BAR_SPACING,
@@ -744,7 +745,6 @@ export default function Chart({
     for (const sibling of siblingScales?.current ?? []) {
       if (sibling !== ts) sibling.setVisibleLogicalRange(range);
     }
-    rightScaleRef.current?.setAutoScale(true);
     requestAnimationFrame(() => {
       suppressTimeSyncRef.current = false;
     });
@@ -762,9 +762,9 @@ export default function Chart({
     const chart = createChart(containerRef.current, {
       layout: {
         background: { color: "transparent" },
-        textColor: "#787b87",
-        fontSize: 12,
-        fontFamily: "'JetBrains Mono', ui-monospace, SFMono-Regular, monospace",
+        textColor: "#bfc4ce",
+        fontSize: 13,
+        fontFamily: "Arial, Helvetica, sans-serif",
         panes: {
           enableResize: false,
           separatorColor: "rgba(120, 123, 134, 0.24)",
@@ -919,9 +919,6 @@ export default function Chart({
         const siblings = siblingScales?.current ?? [];
         const range = ts.getVisibleLogicalRange();
         if (!range) return;
-        if (interval === "1m" && siblingScales) {
-          rightScaleRef.current?.setAutoScale(true);
-        }
         const cached = cacheRef.current;
         const totalBars = cached.length + futureBarCount(interval) + RIGHT_GAP_BARS;
         const distFromRight = totalBars - range.to;
@@ -1023,23 +1020,26 @@ export default function Chart({
     const el = containerRef.current;
     const onDoubleClick = async (e: MouseEvent) => {
       if (!onChartDoubleClick) return;
-      onChartDoubleClick();
       const series = candleRef.current;
-      if (!series || copyableZonePricesRef.current.length === 0 || !el) return;
-      const rect = el.getBoundingClientRect();
-      const y = e.clientY - rect.top;
       let closestPrice: number | null = null;
       let minPixelDiff = Infinity;
-      for (const price of copyableZonePricesRef.current) {
-        const lineY = series.priceToCoordinate(price);
-        if (lineY == null) continue;
-        const diff = Math.abs(lineY - y);
-        if (diff < minPixelDiff) {
-          minPixelDiff = diff;
-          closestPrice = price;
+      if (series && copyableZonePricesRef.current.length > 0 && el) {
+        const rect = el.getBoundingClientRect();
+        const y = e.clientY - rect.top;
+        for (const price of copyableZonePricesRef.current) {
+          const lineY = series.priceToCoordinate(price);
+          if (lineY == null) continue;
+          const diff = Math.abs(lineY - y);
+          if (diff < minPixelDiff) {
+            minPixelDiff = diff;
+            closestPrice = price;
+          }
         }
       }
-      if (closestPrice == null || minPixelDiff > 10) return;
+      if (closestPrice == null || minPixelDiff > 10) {
+        onChartDoubleClick();
+        return;
+      }
 
       const formatted = String(Math.round(closestPrice));
       try {
@@ -1340,7 +1340,46 @@ export default function Chart({
       // Strict comparison: same time → still-open bar update; greater → new bar.
       const isNewBar = timeSec > prevTime;
       const isSameBar = timeSec === prevTime;
-      if (!isNewBar && !isSameBar) return;
+      if (!isNewBar && !isSameBar) {
+        if (!bar.closed) return;
+        const historicalIndex = cached.findIndex((candidate) => candidate.time === timeSec);
+        if (historicalIndex < 0) return;
+        const previousBar = cached[historicalIndex]!;
+        if (
+          previousBar.open === bar.open
+          && previousBar.high === bar.high
+          && previousBar.low === bar.low
+          && previousBar.close === bar.close
+          && previousBar.volume === bar.volume
+          && previousBar.takerBuyVolume === bar.takerBuyVolume
+          && previousBar.closed === bar.closed
+        ) return;
+
+        cached[historicalIndex] = bar;
+        applyLiveKline(interval, bar);
+        const correctedSeries = displayedBars(cached);
+        if (heikin) {
+          const built = heikinSeriesAndAnchor(cached);
+          lastClosedHaRef.current = built.lastClosed;
+          lastHaRef.current = built.lastClosed;
+        }
+        displayCacheRef.current = correctedSeries;
+        rebuildHoverData(cached, correctedSeries);
+        // Historical close updates can arrive after the next candle has
+        // opened; rebuild derived series so later HA opens use final OHLC.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        candleRef.current.setData(correctedSeries as any);
+        deltaRef.current?.setData(cached.map((cachedBar) => {
+          const value = candleDelta(cachedBar);
+          return {
+            time: cachedBar.time as Time,
+            value,
+            color: value >= 0 ? "#26a69a" : "#ef5350",
+          };
+        }));
+        recomputeEmas(cached);
+        return;
+      }
 
       // A stream can deliver the next bar before the prior bar's final update.
       // Settle that prior bar first so the new HA open uses the correct anchor.

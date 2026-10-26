@@ -139,10 +139,25 @@ html, body {
 }
 
 .custom-level-group {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
   margin-left: 8px;
+}
+.custom-level-error {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 100;
+  max-width: min(360px, 80vw);
+  padding: 6px 8px;
+  border: 1px solid rgba(239, 83, 80, 0.5);
+  border-radius: 4px;
+  background: #1e222d;
+  color: #ef5350;
+  font-size: 11px;
+  white-space: normal;
 }
 .custom-color-picker {
   position: relative;
@@ -236,6 +251,12 @@ html, body {
   border-color: #ef5350;
   color: #ef5350;
   background: #252a37;
+}
+.trash-btn:disabled,
+.custom-add-btn:disabled,
+.custom-level-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 /* Main 3-chart grid — sits BELOW the top bar. */

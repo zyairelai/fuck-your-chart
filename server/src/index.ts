@@ -36,6 +36,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(cors());
+app.use(express.json());
 
 const server = http.createServer(app);
 const io = new IOServer(server, {
@@ -50,6 +51,11 @@ const io = new IOServer(server, {
 const HISTORY_LIMIT = 50_000;
 const BOOT_PAGES = 10;
 const history = new Map<Interval, unknown[]>();
+const customLevels: { price: number; color: "red" | "yellow" | "green" }[] = [];
+
+function isCustomLevelColor(value: unknown): value is "red" | "yellow" | "green" {
+  return value === "red" || value === "yellow" || value === "green";
+}
 
 async function loadHistory() {
   await Promise.all(DEFAULT_INTERVALS.map((interval) => loadInterval(interval)));
@@ -124,6 +130,38 @@ app.get("/api/status", (_req, res) => {
     ),
     clients: io.sockets.sockets.size,
   });
+});
+
+app.get("/api/custom-levels", (_req, res) => {
+  res.json({ customLevels });
+});
+
+app.post("/api/custom-levels", (req, res) => {
+  const body: unknown = req.body;
+  if (!body || typeof body !== "object") {
+    res.status(400).json({ error: "price and color are required" });
+    return;
+  }
+  const level = body as { price?: unknown; color?: unknown };
+  if (
+    typeof level.price !== "number"
+    || !Number.isFinite(level.price)
+    || level.price <= 0
+    || !isCustomLevelColor(level.color)
+  ) {
+    res.status(400).json({ error: "price must be positive and color must be red, yellow, or green" });
+    return;
+  }
+  customLevels.push({
+    price: Math.round(level.price * 2) / 2,
+    color: level.color,
+  });
+  res.status(201).json({ customLevels });
+});
+
+app.delete("/api/custom-levels", (_req, res) => {
+  customLevels.length = 0;
+  res.json({ customLevels });
 });
 
 /** HTTP endpoint to switch interval (kept for compatibility). */

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { IPriceScaleApi, ITimeScaleApi, Time } from "lightweight-charts";
 import Chart from "../components/Chart";
 import TopBar from "../components/TopBar";
@@ -56,6 +56,31 @@ export default function Page() {
   const [zones, setZones] = useState<Zones | null>(null);
   const [toggles, setToggles] = useState<LineToggles>(DEFAULT_TOGGLES);
   const [customLevels, setCustomLevels] = useState<CustomLevel[]>([]);
+  const [customLevelsReady, setCustomLevelsReady] = useState(false);
+  const [customLevelsError, setCustomLevelsError] = useState<string | null>(null);
+
+  const customLevelsRequest = useCallback(async (method: "GET" | "POST" | "DELETE", body?: CustomLevel) => {
+    const res = await fetch("/api/custom-levels", {
+      method,
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) {
+      const result = (await res.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(result?.error ?? `Custom levels request failed (${res.status})`);
+    }
+    const result = (await res.json()) as { customLevels: CustomLevel[] };
+    setCustomLevels(result.customLevels);
+    setCustomLevelsError(null);
+  }, []);
+
+  useEffect(() => {
+    void customLevelsRequest("GET")
+      .catch((err: unknown) => {
+        setCustomLevelsError(err instanceof Error ? err.message : "Could not load custom levels");
+      })
+      .finally(() => setCustomLevelsReady(true));
+  }, [customLevelsRequest]);
 
   const onDateChange = useCallback(async (date: string) => {
     try {
@@ -80,8 +105,10 @@ export default function Page() {
         onToggleLayout={() => setMirroredLayout((current) => !current)}
         toggles={toggles}
         onToggle={onToggle}
-        onAddCustom={(price, color) => setCustomLevels((prev) => [...prev, { price, color }])}
-        onClearCustom={() => setCustomLevels([])}
+        customLevelsReady={customLevelsReady}
+        customLevelsError={customLevelsError}
+        onAddCustom={(price, color) => customLevelsRequest("POST", { price, color })}
+        onClearCustom={() => customLevelsRequest("DELETE")}
       />
       <main
         className={`page${mirroredLayout ? " mirrored" : ""}${expandedChart ? ` expanded-${expandedChart}` : ""}`}

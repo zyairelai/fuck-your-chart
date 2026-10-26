@@ -55,8 +55,10 @@ interface Props {
   onToggleLayout: () => void;
   toggles: LineToggles;
   onToggle: (key: keyof LineToggles) => void;
-  onAddCustom: (price: number, color: CustomLevelColor) => void;
-  onClearCustom: () => void;
+  customLevelsReady: boolean;
+  customLevelsError: string | null;
+  onAddCustom: (price: number, color: CustomLevelColor) => Promise<void>;
+  onClearCustom: () => Promise<void>;
 }
 
 export default function TopBar({
@@ -65,6 +67,8 @@ export default function TopBar({
   onToggleLayout,
   toggles,
   onToggle,
+  customLevelsReady,
+  customLevelsError,
   onAddCustom,
   onClearCustom,
 }: Props) {
@@ -76,6 +80,7 @@ export default function TopBar({
   const modalRef = useRef<HTMLDivElement>(null);
   const [customInput, setCustomInput] = useState("");
   const [customColor, setCustomColor] = useState<CustomLevelColor>("yellow");
+  const [customActionError, setCustomActionError] = useState<string | null>(null);
 
   // Notify parent on mount and whenever date changes.
   useEffect(() => { onDateChange(date); }, [date, onDateChange]);
@@ -289,6 +294,7 @@ export default function TopBar({
         className="custom-level-group"
         onSubmit={(e) => {
           e.preventDefault();
+          if (!customLevelsReady) return;
           const value = customInput.trim();
           if (!/^(?:\d+\.?\d*|\.\d+)$/.test(value)) {
             setCustomInput("");
@@ -299,7 +305,10 @@ export default function TopBar({
             setCustomInput("");
             return;
           }
-          onAddCustom(Math.round(n * 2) / 2, customColor);
+          setCustomActionError(null);
+          void onAddCustom(Math.round(n * 2) / 2, customColor).catch((err: unknown) => {
+            setCustomActionError(err instanceof Error ? err.message : "Could not add custom level");
+          });
           setCustomInput("");
         }}
       >
@@ -331,6 +340,7 @@ export default function TopBar({
         <input
           className="custom-level-input"
           value={customInput}
+          disabled={!customLevelsReady}
           onChange={(e) => {
             const value = e.target.value;
             setCustomInput(/^\d*\.?\d*$/.test(value) ? value : "");
@@ -339,14 +349,20 @@ export default function TopBar({
           inputMode="decimal"
           title={`Add a custom price level (${customColor})`}
         />
-        <button type="submit" className="toggle-btn custom-add-btn" title="Add custom level">
+        <button type="submit" className="toggle-btn custom-add-btn" title="Add custom level" disabled={!customLevelsReady}>
           Add
         </button>
         <button
           type="button"
           className="trash-btn"
           title="Remove all custom levels"
-          onClick={onClearCustom}
+          disabled={!customLevelsReady}
+          onClick={() => {
+            setCustomActionError(null);
+            void onClearCustom().catch((err: unknown) => {
+              setCustomActionError(err instanceof Error ? err.message : "Could not remove custom levels");
+            });
+          }}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="3 6 5 6 21 6" />
@@ -356,6 +372,11 @@ export default function TopBar({
             <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
           </svg>
         </button>
+        {(customLevelsError || customActionError) && (
+          <span className="custom-level-error" role="alert">
+            {customActionError ?? customLevelsError}
+          </span>
+        )}
       </form>
     </header>
   );

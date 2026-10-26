@@ -37,6 +37,8 @@ Each chart subscribes to its own interval, calls `series.update(k)` for the open
 
 The browser saves the most recent 1,000 candles per interval in local storage and restores them immediately on page load; the server's current history snapshot is merged by timestamp so cached older candles remain available and the chart stays ordered. Double-click a weekly, Monday, PDH/PDL/mid, 25%/75%, weekend, or custom level to copy its rounded price to the clipboard.
 
+Custom price levels are kept by the running server, so they remain after a page refresh or closing and reopening the browser. Use the trash button to clear them; restarting the Docker container with `docker compose down` followed by `docker compose up` also clears them.
+
 Use the top-left layout button to mirror the chart columns: 1m raw and 1m Heikin Ashi move left while 5m raw and 3m Heikin Ashi move right. Footprint is enabled by default on the 5m and 1m raw charts and disabled on both Heikin Ashi charts.
 
 The raw charts' footprint-delta histograms are enabled by default and controlled by each chart's `footprint` header toggle. Delta is Binance taker-buy BTC volume minus taker-sell BTC volume for each candle; bars are green for positive delta and red for negative delta. Hover a bar to show its signed integer delta above the bar. Turning the toggle off removes the entire pane. The pane divider is subtle and cannot be dragged.
