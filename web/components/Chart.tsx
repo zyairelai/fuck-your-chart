@@ -339,6 +339,10 @@ interface Props {
   /** Register this chart's time scale so siblings can mirror zoom/pan. */
   registerTimeScale?: (api: ITimeScaleApi<Time> | null) => void;
   siblingScales?: React.MutableRefObject<ITimeScaleApi<Time>[]>;
+  /** Price scales to synchronize while this chart's price axis is dragged. */
+  registerPriceScale?: (api: IPriceScaleApi | null) => void;
+  siblingPriceScales?: React.MutableRefObject<IPriceScaleApi[]>;
+  onChartDoubleClick?: () => void;
   linkedCrosshairId?: LinkedCrosshairId;
   registerLinkedCrosshair?: (
     id: LinkedCrosshairId,
@@ -359,6 +363,9 @@ export default function Chart({
   customLevels = [],
   registerTimeScale,
   siblingScales,
+  registerPriceScale,
+  siblingPriceScales,
+  onChartDoubleClick,
   linkedCrosshairId,
   registerLinkedCrosshair,
   onLinkedCrosshair,
@@ -378,9 +385,13 @@ export default function Chart({
    *  and the OHLC hover legend both read this so they track the chart. */
   const displayCacheRef = useRef<Kline[]>([]);
   /** Zone price-line handles — redrawn when calendar date or toggles change. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const zoneLinesRef = useRef<any[]>([]);
+  const zoneLinesRef = useRef<{
+    line: ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]>;
+    price: number;
+    labelVisible: boolean;
+  }[]>([]);
   const copyableZonePricesRef = useRef<number[]>([]);
+  const zoneLabelFrameRef = useRef<number | null>(null);
   /**
    * Heikin Ashi rolling state — two slots:
    *
@@ -410,6 +421,7 @@ export default function Chart({
   const pendingLinkedCrosshairRef = useRef<{ time: number | null } | null>(null);
   const linkedCrosshairFrameRef = useRef<number | null>(null);
   const linkedCrosshairActiveRef = useRef(false);
+  const pointerInsideChartRef = useRef(false);
   const [status, setStatus] = useState<"connecting" | "live" | "off">("connecting");
   const [chartReady, setChartReady] = useState(false);
   const ohlcOpenRef = useRef<HTMLSpanElement | null>(null);
@@ -421,6 +433,27 @@ export default function Chart({
   const hoverKeyRef = useRef<string | null>(null);
   const deltaHoverKeyRef = useRef<string | null>(null);
   const hoverDataRef = useRef(new Map<number, HoverData>());
+
+  const updateZoneLabelVisibility = () => {
+    const pane = chartRef.current?.panes()[0]?.getHTMLElement();
+    const series = candleRef.current;
+    if (!pane || !series) return;
+    for (const zoneLine of zoneLinesRef.current) {
+      const y = series.priceToCoordinate(zoneLine.price);
+      const visible = y !== null && y >= 0 && y <= pane.clientHeight;
+      if (visible === zoneLine.labelVisible) continue;
+      zoneLine.labelVisible = visible;
+      zoneLine.line.applyOptions({ axisLabelVisible: visible });
+    }
+  };
+
+  const scheduleZoneLabelVisibilityUpdate = () => {
+    if (zoneLabelFrameRef.current !== null) return;
+    zoneLabelFrameRef.current = requestAnimationFrame(() => {
+      zoneLabelFrameRef.current = null;
+      updateZoneLabelVisibility();
+    });
+  };
   const [copyToast, setCopyToast] = useState<string | null>(null);
   const [footprintEnabled, setFootprintEnabled] = useState(defaultFootprintEnabled);
   const footprintEnabledRef = useRef(defaultFootprintEnabled);
@@ -791,6 +824,7 @@ export default function Chart({
     // Default right price scale (used by every series on this chart).
     const right = chart.priceScale("right");
     rightScaleRef.current = right;
+    registerPriceScale?.(right);
 
     const refs: ISeriesApi<"Line">[] = new Array(emas.length);
     const addEma = (period: number) => {
@@ -876,6 +910,7 @@ export default function Chart({
     const ts = chart.timeScale();
     let tOriginating = false;
     const onTimeRange = () => {
+      scheduleZoneLabelVisibilityUpdate();
       if (tOriginating) return;
       if (suppressTimeSyncRef.current) return;
       if (cacheRef.current.length === 0) return;
@@ -930,12 +965,15 @@ export default function Chart({
     };
     chart.subscribeCrosshairMove(onCrosshair);
     const onPointerEnter = () => {
-      if (linkedCrosshairActiveRef.current) {
-        linkedCrosshairActiveRef.current = false;
-        chart.applyOptions({ crosshair: { horzLine: { visible: true } } });
-      }
+      pointerInsideChartRef.current = true;
+      linkedCrosshairActiveRef.current = false;
+      chart.applyOptions({ crosshair: { horzLine: { visible: true } } });
+    };
+    const onPointerLeave = () => {
+      pointerInsideChartRef.current = false;
     };
     containerRef.current?.addEventListener("pointerenter", onPointerEnter);
+    containerRef.current?.addEventListener("pointerleave", onPointerLeave);
 
     const syncLinkedCrosshair: LinkedCrosshairSync = (time) => {
       const generation = ++linkedCrosshairGenerationRef.current;
@@ -951,7 +989,12 @@ export default function Chart({
         const barIndex = findBarIndex(displayCacheRef.current, time, true);
         const bar = barIndex >= 0 ? displayCacheRef.current[barIndex] : undefined;
         if (bar && candleRef.current) {
-          if (!linkedCrosshairActiveRef.current) {
+          if (pointerInsideChartRef.current) {
+            if (linkedCrosshairActiveRef.current) {
+              linkedCrosshairActiveRef.current = false;
+              chart.applyOptions({ crosshair: { horzLine: { visible: true } } });
+            }
+          } else if (!linkedCrosshairActiveRef.current) {
             linkedCrosshairActiveRef.current = true;
             chart.applyOptions({ crosshair: { horzLine: { visible: false } } });
           }
@@ -979,6 +1022,8 @@ export default function Chart({
     // Right-click anywhere in the chart -> open the custom context menu.
     const el = containerRef.current;
     const onDoubleClick = async (e: MouseEvent) => {
+      if (!onChartDoubleClick) return;
+      onChartDoubleClick();
       const series = candleRef.current;
       if (!series || copyableZonePricesRef.current.length === 0 || !el) return;
       const rect = el.getBoundingClientRect();
@@ -1020,19 +1065,64 @@ export default function Chart({
       e.preventDefault();
       setContextMenu({ x: e.clientX, y: e.clientY });
     };
+    let priceScaleFrame: number | null = null;
+    let priceScalePointerId: number | null = null;
+    const syncPriceScale = () => {
+      updateZoneLabelVisibility();
+      const range = right.getVisibleRange();
+      if (range) {
+        for (const sibling of siblingPriceScales?.current ?? []) {
+          if (sibling === right) continue;
+          const siblingRange = sibling.getVisibleRange();
+          if (
+            !siblingRange
+            || siblingRange.from !== range.from
+            || siblingRange.to !== range.to
+          ) {
+            sibling.setVisibleRange(range);
+          }
+        }
+      }
+      if (priceScalePointerId !== null) {
+        priceScaleFrame = requestAnimationFrame(syncPriceScale);
+      }
+    };
+    const onPriceScalePointerDown = (e: PointerEvent) => {
+      if (e.button !== 0 || !el || right.width() <= 0) return;
+      const rect = el.getBoundingClientRect();
+      if (e.clientX < rect.right - right.width()) return;
+      priceScalePointerId = e.pointerId;
+      if (priceScaleFrame === null) {
+        priceScaleFrame = requestAnimationFrame(syncPriceScale);
+      }
+    };
+    const onPriceScalePointerUp = (e: PointerEvent) => {
+      if (e.pointerId !== priceScalePointerId) return;
+      priceScalePointerId = null;
+      if (priceScaleFrame !== null) {
+        cancelAnimationFrame(priceScaleFrame);
+        priceScaleFrame = null;
+      }
+      syncPriceScale();
+    };
     el?.addEventListener("dblclick", onDoubleClick);
     el?.addEventListener("contextmenu", onContext);
+    el?.addEventListener("pointerdown", onPriceScalePointerDown);
+    window.addEventListener("pointerup", onPriceScalePointerUp);
+    window.addEventListener("pointercancel", onPriceScalePointerUp);
 
     // Place the default view once the cell has a real size AND history is in.
     // Do not fitContent() on an empty/0-width chart — that is what left the
     // 1m panes stuck on the left with a huge empty gap.
+    let initialViewApplied = false;
     const ro = new ResizeObserver(() => {
+      scheduleZoneLabelVisibilityUpdate();
       if (!chartRef.current) return;
       const w = el?.clientWidth ?? 0;
       const h = el?.clientHeight ?? 0;
-      if (w > 40 && h > 40 && cacheRef.current.length > 0) {
+      if (!initialViewApplied && w > 40 && h > 40 && cacheRef.current.length > 0) {
         applyDefaultView();
-        ro.disconnect();
+        initialViewApplied = true;
       }
     });
 
@@ -1044,15 +1134,29 @@ export default function Chart({
         cancelAnimationFrame(linkedCrosshairFrameRef.current);
         linkedCrosshairFrameRef.current = null;
       }
+      if (zoneLabelFrameRef.current !== null) {
+        cancelAnimationFrame(zoneLabelFrameRef.current);
+        zoneLabelFrameRef.current = null;
+      }
+      if (priceScaleFrame !== null) cancelAnimationFrame(priceScaleFrame);
       pendingLinkedCrosshairRef.current = null;
       el?.removeEventListener("dblclick", onDoubleClick);
       el?.removeEventListener("contextmenu", onContext);
+      el?.removeEventListener("pointerdown", onPriceScalePointerDown);
       el?.removeEventListener("pointerenter", onPointerEnter);
+      el?.removeEventListener("pointerleave", onPointerLeave);
+      window.removeEventListener("pointerup", onPriceScalePointerUp);
+      window.removeEventListener("pointercancel", onPriceScalePointerUp);
       if (copyToastTimerRef.current) clearTimeout(copyToastTimerRef.current);
       const sibs = siblingScales?.current;
       if (sibs) {
         const i = sibs.indexOf(ts);
         if (i >= 0) sibs.splice(i, 1);
+      }
+      const priceScales = siblingPriceScales?.current;
+      if (priceScales) {
+        const i = priceScales.indexOf(right);
+        if (i >= 0) priceScales.splice(i, 1);
       }
       registerTimeScale?.(null);
       if (linkedCrosshairId) {
@@ -1060,6 +1164,7 @@ export default function Chart({
       }
       chart.remove();
       chartRef.current = null;
+      rightScaleRef.current = null;
       deltaRef.current = null;
       setChartReady(false);
     };
@@ -1083,8 +1188,8 @@ export default function Chart({
   useEffect(() => {
     const series = candleRef.current;
     if (!series) return;
-    for (const pl of zoneLinesRef.current) {
-      try { series.removePriceLine(pl); } catch (_) { /* already removed */ }
+    for (const zoneLine of zoneLinesRef.current) {
+      try { series.removePriceLine(zoneLine.line); } catch (_) { /* already removed */ }
     }
     zoneLinesRef.current = [];
     copyableZonePricesRef.current = [];
@@ -1098,16 +1203,15 @@ export default function Chart({
       title: string,
     ) => {
       const roundedPrice = roundHalf(price);
-      zoneLinesRef.current.push(
-        series.createPriceLine({
-          price: roundedPrice,
-          color,
-          lineWidth: width,
-          lineStyle: style,
-          axisLabelVisible: true,
-          title,
-        }),
-      );
+      const line = series.createPriceLine({
+        price: roundedPrice,
+        color,
+        lineWidth: width,
+        lineStyle: style,
+        axisLabelVisible: false,
+        title,
+      });
+      zoneLinesRef.current.push({ line, price: roundedPrice, labelVisible: false });
       copyableZonePricesRef.current.push(roundedPrice);
     };
 
@@ -1141,18 +1245,18 @@ export default function Chart({
           ? "#7cfc00"
           : "#ffeb3b";
       const roundedPrice = roundHalf(level.price);
-      zoneLinesRef.current.push(
-        series.createPriceLine({
-          price: roundedPrice,
-          color,
-          lineWidth: 3,
-          lineStyle: LineStyle.Solid,
-          axisLabelVisible: true,
-          title: `C${i + 1}`,
-        }),
-      );
+      const line = series.createPriceLine({
+        price: roundedPrice,
+        color,
+        lineWidth: 3,
+        lineStyle: LineStyle.Solid,
+        axisLabelVisible: false,
+        title: `C${i + 1}`,
+      });
+      zoneLinesRef.current.push({ line, price: roundedPrice, labelVisible: false });
       copyableZonePricesRef.current.push(roundedPrice);
     }
+    scheduleZoneLabelVisibilityUpdate();
   }, [zones, lineToggles, customLevels, chartReady]);
 
   // --- socket: history + live updates --------------------------------------
@@ -1302,6 +1406,7 @@ export default function Chart({
       // Last point on the candle series is the live bar, so update() applies.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       candleRef.current.update(candlePayload as any);
+      scheduleZoneLabelVisibilityUpdate();
       const deltaValue = candleDelta(bar);
       deltaRef.current?.update({
         time: timeSec as Time,
@@ -1544,7 +1649,7 @@ export default function Chart({
               <path d="M3 12a9 9 0 1 0 3-6.7" />
               <polyline points="3 4 3 9 8 9" />
             </svg>
-            Reset
+            Reset Price Scale
           </button>
         </div>
       )}

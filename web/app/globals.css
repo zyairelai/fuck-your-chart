@@ -256,6 +256,40 @@ html, body {
 .page.mirrored .chart-1m-ha { grid-column: 1; grid-row: 2; }
 .page.mirrored .chart-3m-ha { grid-column: 2; grid-row: 2; }
 
+/* Expanded mode hides the other higher-timeframe chart. */
+.page.expanded-5m .chart-3m-ha,
+.page.expanded-3m .chart-5m { display: none; }
+.page.expanded-5m:not(.mirrored) .chart-5m,
+.page.expanded-3m:not(.mirrored) .chart-3m-ha {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+.page.expanded-5m:not(.mirrored) .chart-1m-raw,
+.page.expanded-3m:not(.mirrored) .chart-1m-raw {
+  grid-column: 2;
+  grid-row: 1;
+}
+.page.expanded-5m:not(.mirrored) .chart-1m-ha,
+.page.expanded-3m:not(.mirrored) .chart-1m-ha {
+  grid-column: 2;
+  grid-row: 2;
+}
+.page.expanded-5m.mirrored .chart-5m,
+.page.expanded-3m.mirrored .chart-3m-ha {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+.page.expanded-5m.mirrored .chart-1m-raw,
+.page.expanded-3m.mirrored .chart-1m-raw {
+  grid-column: 1;
+  grid-row: 1;
+}
+.page.expanded-5m.mirrored .chart-1m-ha,
+.page.expanded-3m.mirrored .chart-1m-ha {
+  grid-column: 1;
+  grid-row: 2;
+}
+
 .cell {
   position: relative;
   background: #161a25;

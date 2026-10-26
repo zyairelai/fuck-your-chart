@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import type { ITimeScaleApi, Time } from "lightweight-charts";
+import type { IPriceScaleApi, ITimeScaleApi, Time } from "lightweight-charts";
 import Chart from "../components/Chart";
 import TopBar from "../components/TopBar";
 import type { TzOffset, Zones, LineToggles, CustomLevel, CustomLevelColor } from "../components/Chart";
@@ -26,6 +26,7 @@ const DEFAULT_TOGGLES: LineToggles = {
 export default function Page() {
   // ── Right column: 1m raw (top) + 1m HA (bottom) — sync time ────────────
   const oneMinuteTimeScales = useRef<ITimeScaleApi<Time>[]>([]);
+  const oneMinutePriceScales = useRef<IPriceScaleApi[]>([]);
   const oneMinuteCrosshairSync = useRef<Record<LinkedCrosshairId, LinkedCrosshairSync | null>>({
     raw: null,
     heikin: null,
@@ -34,6 +35,10 @@ export default function Page() {
   const registerRightTime = (api: ITimeScaleApi<Time> | null) => {
     if (api && !oneMinuteTimeScales.current.includes(api))
       oneMinuteTimeScales.current.push(api);
+  };
+  const registerRightPriceScale = (api: IPriceScaleApi | null) => {
+    if (api && !oneMinutePriceScales.current.includes(api))
+      oneMinutePriceScales.current.push(api);
   };
   const registerRightCrosshair = (
     id: LinkedCrosshairId,
@@ -47,6 +52,7 @@ export default function Page() {
   };
   const [tz, setTz] = useState<TzOffset>(8);
   const [mirroredLayout, setMirroredLayout] = useState(false);
+  const [expandedChart, setExpandedChart] = useState<"5m" | "3m" | null>(null);
   const [zones, setZones] = useState<Zones | null>(null);
   const [toggles, setToggles] = useState<LineToggles>(DEFAULT_TOGGLES);
   const [customLevels, setCustomLevels] = useState<CustomLevel[]>([]);
@@ -77,7 +83,9 @@ export default function Page() {
         onAddCustom={(price, color) => setCustomLevels((prev) => [...prev, { price, color }])}
         onClearCustom={() => setCustomLevels([])}
       />
-      <main className={`page${mirroredLayout ? " mirrored" : ""}`}>
+      <main
+        className={`page${mirroredLayout ? " mirrored" : ""}${expandedChart ? ` expanded-${expandedChart}` : ""}`}
+      >
         <div className="cell chart-5m">
           <Chart
             interval="5m"
@@ -88,6 +96,9 @@ export default function Page() {
             zones={zones}
             lineToggles={toggles}
             customLevels={customLevels}
+            onChartDoubleClick={() => {
+              setExpandedChart((current) => current === "5m" ? null : "5m");
+            }}
           />
         </div>
         <div className="cell chart-1m-raw">
@@ -102,6 +113,8 @@ export default function Page() {
             customLevels={customLevels}
             registerTimeScale={registerRightTime}
             siblingScales={oneMinuteTimeScales}
+            registerPriceScale={registerRightPriceScale}
+            siblingPriceScales={oneMinutePriceScales}
             linkedCrosshairId="raw"
             registerLinkedCrosshair={registerRightCrosshair}
             onLinkedCrosshair={syncRightCrosshair}
@@ -117,6 +130,9 @@ export default function Page() {
             zones={zones}
             lineToggles={toggles}
             customLevels={customLevels}
+            onChartDoubleClick={() => {
+              setExpandedChart((current) => current === "3m" ? null : "3m");
+            }}
           />
         </div>
         <div className="cell chart-1m-ha">
@@ -132,6 +148,8 @@ export default function Page() {
             customLevels={customLevels}
             registerTimeScale={registerRightTime}
             siblingScales={oneMinuteTimeScales}
+            registerPriceScale={registerRightPriceScale}
+            siblingPriceScales={oneMinutePriceScales}
             linkedCrosshairId="heikin"
             registerLinkedCrosshair={registerRightCrosshair}
             onLinkedCrosshair={syncRightCrosshair}
