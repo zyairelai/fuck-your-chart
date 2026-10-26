@@ -36,11 +36,21 @@ interface Kline {
   closed: boolean;
 }
 
-interface DeltaHover {
-  text: string;
-  color: string;
-  left: number;
-  top: number;
+interface EmaTail {
+  time: number;
+  previous: number;
+  value: number;
+}
+
+interface HoverData {
+  open: string;
+  high: string;
+  low: string;
+  close: string;
+  change: string;
+  changeClass: "up" | "down";
+  delta: string;
+  deltaColor: string;
 }
 
 type LinkedCrosshairId = "raw" | "heikin";
@@ -211,16 +221,29 @@ function fmtCrosshairTime(t: Time, tz: TzOffset): string {
 }
 
 function makeLocalization(tz: TzOffset) {
+  let lastEpoch: number | null = null;
+  let lastFormattedTime = "";
   return {
-    timeFormatter: (t: Time) => fmtCrosshairTime(t, tz),
-    priceFormatter: (price: number) => price.toFixed(1),
+    timeFormatter: (t: Time) => {
+      const epoch = t as number;
+      if (epoch !== lastEpoch) {
+        lastEpoch = epoch;
+        lastFormattedTime = fmtCrosshairTime(t, tz);
+      }
+      return lastFormattedTime;
+    },
+    priceFormatter: formatPrice,
   };
 }
 
+function formatPrice(price: number): string {
+  return Number.isInteger(price) ? price.toFixed(0) : price.toFixed(1);
+}
+
 const PRICE_FORMAT = {
-  type: "price" as const,
-  precision: 1,
+  type: "custom" as const,
   minMove: 0.1,
+  formatter: formatPrice,
 };
 
 function setTabTitle(price: number) {
@@ -231,9 +254,35 @@ function setTabTitle(price: number) {
   document.title = `$${s} BTC fuck-your-chart`;
 }
 
+function copyToLegacyClipboard(text: string): boolean {
+  const textArea = document.createElement("textarea");
+  textArea.value = text;
+  textArea.style.position = "fixed";
+  textArea.style.left = "-999999px";
+  document.body.appendChild(textArea);
+  try {
+    textArea.select();
+    return document.execCommand("copy");
+  } finally {
+    document.body.removeChild(textArea);
+  }
+}
+
+function findBarIndex(bars: Kline[], time: number, exact = false): number {
+  let low = 0;
+  let high = bars.length;
+  while (low < high) {
+    const mid = low + Math.floor((high - low) / 2);
+    if (bars[mid]!.time < time) low = mid + 1;
+    else high = mid;
+  }
+  if (exact) return bars[low]?.time === time ? low : -1;
+  return low < bars.length && bars[low]!.time === time ? low : low - 1;
+}
+
 /** Format HH:mm for axis tick marks. Each call remembers the previously
- *  formatted tick's day-of-week so we can prefix "Mon ", "Tue ", ... on the
- *  first tick of a new calendar day (in the chosen timezone). This mirrors
+ * formatted tick's day-of-week so we can prefix "Mon ", "Tue ", ... on the
+ * first tick of a new calendar day (in the chosen timezone). This mirrors
  *  the day-label rendering used by TradingView's chart axis. */
 function makeTickFormatter(tz: TzOffset): (t: Time) => string {
   let prevDay = -1;
@@ -279,6 +328,8 @@ interface Props {
   emas?: number[];
   /** EMAs that should start in the OFF state (line hidden, chip darkened). */
   defaultEmaOff?: number[];
+  /** Whether the footprint pane is visible on first mount. */
+  defaultFootprintEnabled?: boolean;
   /** Display timezone offset (hours). Shared global state from page. */
   tz?: TzOffset;
   /** Horizontal levels from the calendar date (does not move the chart). */
@@ -301,6 +352,7 @@ export default function Chart({
   heikin = false,
   emas = [],
   defaultEmaOff = [],
+  defaultFootprintEnabled = true,
   tz = 0,
   zones = null,
   lineToggles = { weekly: true, monday: false, pdhlm: true, fibb: false, weekend: false },
@@ -319,6 +371,7 @@ export default function Chart({
    *  sitting on the candle series (LWC update() can only touch the last point). */
   const futureRef = useRef<ISeriesApi<"Line"> | null>(null);
   const emaRefs = useRef<ISeriesApi<"Line">[]>([]);
+  const emaTailRef = useRef(new Map<number, EmaTail>());
   const rightScaleRef = useRef<IPriceScaleApi | null>(null);
   const cacheRef = useRef<Kline[]>([]);
   /** Bars currently drawn on the candle series (raw or Heikin Ashi). EMA
@@ -327,6 +380,7 @@ export default function Chart({
   /** Zone price-line handles — redrawn when calendar date or toggles change. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const zoneLinesRef = useRef<any[]>([]);
+  const copyableZonePricesRef = useRef<number[]>([]);
   /**
    * Heikin Ashi rolling state — two slots:
    *
@@ -352,22 +406,25 @@ export default function Chart({
   const suppressTimeSyncRef = useRef(true);
   const suppressLinkedCrosshairRef = useRef(false);
   const linkedCrosshairGenerationRef = useRef(0);
+  const lastLinkedCrosshairTimeRef = useRef<number | null>(null);
+  const pendingLinkedCrosshairRef = useRef<{ time: number | null } | null>(null);
+  const linkedCrosshairFrameRef = useRef<number | null>(null);
+  const linkedCrosshairActiveRef = useRef(false);
   const [status, setStatus] = useState<"connecting" | "live" | "off">("connecting");
   const [chartReady, setChartReady] = useState(false);
-  const [lastPrice, setLastPrice] = useState<number | null>(null);
-  const [change, setChange] = useState<number | null>(null);
-  const [deltaHover, setDeltaHover] = useState<DeltaHover | null>(null);
-  const [footprintEnabled, setFootprintEnabled] = useState(true);
-  const footprintEnabledRef = useRef(true);
-
-  // OHLC hover legend (TradingView style) — shown on every chart.
-  const [hover, setHover] = useState<{
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-    change: number;
-  } | null>(null);
+  const ohlcOpenRef = useRef<HTMLSpanElement | null>(null);
+  const ohlcHighRef = useRef<HTMLSpanElement | null>(null);
+  const ohlcLowRef = useRef<HTMLSpanElement | null>(null);
+  const ohlcCloseRef = useRef<HTMLSpanElement | null>(null);
+  const ohlcChangeRef = useRef<HTMLSpanElement | null>(null);
+  const deltaHoverRef = useRef<HTMLDivElement | null>(null);
+  const hoverKeyRef = useRef<string | null>(null);
+  const deltaHoverKeyRef = useRef<string | null>(null);
+  const hoverDataRef = useRef(new Map<number, HoverData>());
+  const [copyToast, setCopyToast] = useState<string | null>(null);
+  const [footprintEnabled, setFootprintEnabled] = useState(defaultFootprintEnabled);
+  const footprintEnabledRef = useRef(defaultFootprintEnabled);
+  const copyToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /** Right-click context menu state. */
   const [contextMenu, setContextMenu] = useState<{
@@ -406,63 +463,116 @@ export default function Chart({
   /** Binance taker-buy base volume minus the remaining (taker-sell) volume. */
   const candleDelta = (bar: Kline) => 2 * bar.takerBuyVolume - bar.volume;
 
+  const paintHoverData = (data: HoverData) => {
+    if (ohlcOpenRef.current) ohlcOpenRef.current.textContent = data.open;
+    if (ohlcHighRef.current) ohlcHighRef.current.textContent = data.high;
+    if (ohlcLowRef.current) ohlcLowRef.current.textContent = data.low;
+    if (ohlcCloseRef.current) ohlcCloseRef.current.textContent = data.close;
+    if (ohlcChangeRef.current) {
+      ohlcChangeRef.current.textContent = data.change;
+      ohlcChangeRef.current.className = data.changeClass;
+    }
+  };
+
+  const updateHoverData = (raw: Kline[], displayed: Kline[], index: number) => {
+    const bar = displayed[index];
+    const rawBar = raw[index];
+    if (!bar || !rawBar) return;
+    const previous = index > 0 ? displayed[index - 1]! : null;
+    const baseline = previous ? previous.close : bar.open;
+    const change = ((bar.close - baseline) / (baseline || 1)) * 100;
+    const delta = candleDelta(rawBar);
+    const data: HoverData = {
+      open: fmt(bar.open),
+      high: fmt(bar.high),
+      low: fmt(bar.low),
+      close: fmt(bar.close),
+      change: `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`,
+      changeClass: change >= 0 ? "up" : "down",
+      delta: String(Math.trunc(delta)),
+      deltaColor: delta >= 0 ? "#00c853" : "#ef5350",
+    };
+    hoverDataRef.current.set(bar.time, data);
+    if (hoverKeyRef.current === String(bar.time)) paintHoverData(data);
+    if (
+      deltaHoverKeyRef.current === String(bar.time)
+      && deltaHoverRef.current
+      && deltaHoverRef.current.style.display !== "none"
+    ) {
+      deltaHoverRef.current.textContent = data.delta;
+      deltaHoverRef.current.style.color = data.deltaColor;
+    }
+  };
+
+  const rebuildHoverData = (raw: Kline[], displayed: Kline[]) => {
+    const next = new Map<number, HoverData>();
+    hoverDataRef.current = next;
+    for (let i = 0; i < displayed.length; i++) updateHoverData(raw, displayed, i);
+  };
+
   const updateHoverAtTime = (time: number | null) => {
     if (time == null) {
-      setHover(null);
-      setDeltaHover(null);
-      return;
-    }
-
-    const displayed = displayCacheRef.current;
-    const lastBar = displayed[displayed.length - 1];
-    if (!lastBar || time > lastBar.time) {
-      setHover(null);
-      setDeltaHover(null);
-      return;
-    }
-
-    let found: Kline | undefined;
-    for (let i = displayed.length - 1; i >= 0; i--) {
-      const bar = displayed[i]!;
-      if (bar.time <= time) {
-        found = bar;
-        break;
+      hoverKeyRef.current = null;
+      deltaHoverKeyRef.current = null;
+      for (const ref of [
+        ohlcOpenRef,
+        ohlcHighRef,
+        ohlcLowRef,
+        ohlcCloseRef,
+        ohlcChangeRef,
+      ]) {
+        if (ref.current) ref.current.textContent = "";
       }
-    }
-    if (found) {
-      const index = displayed.indexOf(found);
-      const previous = index > 0 ? displayed[index - 1]! : null;
-      const baseline = previous ? previous.close : found.open;
-      setHover({
-        open: found.open,
-        high: found.high,
-        low: found.low,
-        close: found.close,
-        change: ((found.close - baseline) / (baseline || 1)) * 100,
-      });
-    } else {
-      setHover(null);
-    }
-
-    const rawBar = cacheRef.current.find((bar) => bar.time === time);
-    const chart = chartRef.current;
-    const paneElement = chart?.panes()[1]?.getHTMLElement();
-    const cellElement = containerRef.current?.parentElement;
-    const x = chart?.timeScale().timeToCoordinate(time as Time);
-    if (!footprintEnabledRef.current || !rawBar || !paneElement || !cellElement || x == null) {
-      setDeltaHover(null);
+      if (ohlcChangeRef.current) ohlcChangeRef.current.className = "";
+      if (deltaHoverRef.current) deltaHoverRef.current.style.display = "none";
       return;
     }
 
-    const paneRect = paneElement.getBoundingClientRect();
-    const cellRect = cellElement.getBoundingClientRect();
-    const value = candleDelta(rawBar);
-    setDeltaHover({
-      text: String(Math.trunc(value)),
-      color: value >= 0 ? "#00c853" : "#ef5350",
-      left: paneRect.left - cellRect.left + x,
-      top: paneRect.top - cellRect.top - 1,
-    });
+    const hoverData = hoverDataRef.current.get(time);
+    if (hoverData) {
+      if (hoverKeyRef.current !== String(time)) {
+        hoverKeyRef.current = String(time);
+        paintHoverData(hoverData);
+      }
+    } else if (hoverKeyRef.current !== null) {
+      hoverKeyRef.current = null;
+      for (const ref of [
+        ohlcOpenRef,
+        ohlcHighRef,
+        ohlcLowRef,
+        ohlcCloseRef,
+        ohlcChangeRef,
+      ]) {
+        if (ref.current) ref.current.textContent = "";
+      }
+      if (ohlcChangeRef.current) ohlcChangeRef.current.className = "";
+    }
+
+    const chart = chartRef.current;
+    const deltaElement = deltaHoverRef.current;
+    if (!footprintEnabledRef.current || !hoverData || !chart || !deltaElement) {
+      deltaHoverKeyRef.current = null;
+      if (deltaElement && deltaElement.style.display !== "none") {
+        deltaElement.style.display = "none";
+      }
+      return;
+    }
+
+    const key = String(time);
+    if (key === deltaHoverKeyRef.current) return;
+    const x = chart.timeScale().timeToCoordinate(time as Time);
+    const paneElement = chart.panes()[1]?.getHTMLElement();
+    if (x == null || !paneElement) {
+      deltaHoverKeyRef.current = null;
+      if (deltaElement.style.display !== "none") deltaElement.style.display = "none";
+      return;
+    }
+    deltaHoverKeyRef.current = key;
+    deltaElement.textContent = hoverData.delta;
+    deltaElement.style.color = hoverData.deltaColor;
+    deltaElement.style.left = `${x}px`;
+    deltaElement.style.top = `${paneElement.offsetTop - 1}px`;
+    deltaElement.style.display = "block";
   };
 
   const createDeltaSeries = () => {
@@ -500,12 +610,23 @@ export default function Chart({
     for (let i = 0; i < emas.length; i++) {
       const period = emas[i]!;
       const line = emaRefs.current[i];
+      if (bars.length === 0) {
+        emaTailRef.current.delete(period);
+        line?.setData([]);
+        continue;
+      }
+      const smoothed = ema(values, period);
+      const value = smoothed[smoothed.length - 1]!;
+      emaTailRef.current.set(period, {
+        time: bars[bars.length - 1]!.time,
+        previous: smoothed[smoothed.length - 2] ?? value,
+        value,
+      });
       if (!line) continue;
       if (!enabled.has(period)) {
         line.setData([]);
         continue;
       }
-      const smoothed = ema(values, period);
       const data = smoothed.map((v, j) => ({ time: bars[j]!.time as Time, value: v }));
       line.setData(data);
     }
@@ -609,7 +730,7 @@ export default function Chart({
       layout: {
         background: { color: "transparent" },
         textColor: "#787b87",
-        fontSize: 10,
+        fontSize: 12,
         fontFamily: "'JetBrains Mono', ui-monospace, SFMono-Regular, monospace",
         panes: {
           enableResize: false,
@@ -627,8 +748,8 @@ export default function Chart({
       },
       crosshair: {
         mode: CrosshairMode.Normal,
-        vertLine: { color: "#787b86", width: 1, style: 1, labelBackgroundColor: "#2a2e39" },
-        horzLine: { color: "rgba(120, 123, 134, 0.22)", width: 1, style: 1, labelBackgroundColor: "#2a2e39" },
+        vertLine: { color: "rgba(190, 196, 208, 0.7)", width: 1, style: LineStyle.Dashed, labelBackgroundColor: "#2a2e39" },
+        horzLine: { color: "rgba(190, 196, 208, 0.7)", width: 1, style: LineStyle.Dashed, labelBackgroundColor: "#2a2e39" },
       },
       localization: makeLocalization(tz),
       rightPriceScale: {
@@ -722,6 +843,35 @@ export default function Chart({
     }
     emaRefs.current = refs;
 
+    const savedBars = getHistory(interval);
+    if (savedBars.length > 0) {
+      const built = heikin ? heikinSeriesAndAnchor(savedBars) : null;
+      const series = built?.series ?? savedBars;
+      const lastClosed = built?.lastClosed ?? null;
+      lastClosedHaRef.current = lastClosed;
+      lastHaRef.current = lastClosed;
+      cacheRef.current = savedBars.slice();
+      displayCacheRef.current = series;
+      rebuildHoverData(savedBars, series);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      candle.setData(series as any);
+      deltaRef.current?.setData(savedBars.map((bar) => {
+        const value = candleDelta(bar);
+        return {
+          time: bar.time as Time,
+          value,
+          color: value >= 0 ? "#26a69a" : "#ef5350",
+        };
+      }));
+      const lastBar = series[series.length - 1]!;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      futureRef.current?.setData(futureWhitespace(lastBar.time, interval) as any);
+      const first = savedBars[0]!.open;
+      if (interval === "1m" && !heikin) setTabTitle(lastBar.close);
+      recomputeEmas(savedBars);
+      requestAnimationFrame(() => applyDefaultView());
+    }
+
     // --- Time-scale sync ----------------------------------------------------
     const ts = chart.timeScale();
     let tOriginating = false;
@@ -764,25 +914,55 @@ export default function Chart({
         linkedCrosshairId
         && onLinkedCrosshair
         && !suppressLinkedCrosshairRef.current
+        && lastLinkedCrosshairTimeRef.current !== time
       ) {
-        onLinkedCrosshair(linkedCrosshairId, time);
+        lastLinkedCrosshairTimeRef.current = time;
+        pendingLinkedCrosshairRef.current = { time };
+        if (linkedCrosshairFrameRef.current === null) {
+          linkedCrosshairFrameRef.current = requestAnimationFrame(() => {
+            linkedCrosshairFrameRef.current = null;
+            const pending = pendingLinkedCrosshairRef.current;
+            pendingLinkedCrosshairRef.current = null;
+            if (pending) onLinkedCrosshair(linkedCrosshairId, pending.time);
+          });
+        }
       }
     };
     chart.subscribeCrosshairMove(onCrosshair);
+    const onPointerEnter = () => {
+      if (linkedCrosshairActiveRef.current) {
+        linkedCrosshairActiveRef.current = false;
+        chart.applyOptions({ crosshair: { horzLine: { visible: true } } });
+      }
+    };
+    containerRef.current?.addEventListener("pointerenter", onPointerEnter);
 
     const syncLinkedCrosshair: LinkedCrosshairSync = (time) => {
       const generation = ++linkedCrosshairGenerationRef.current;
       suppressLinkedCrosshairRef.current = true;
       if (time == null) {
         chart.clearCrosshairPosition();
+        if (linkedCrosshairActiveRef.current) {
+          linkedCrosshairActiveRef.current = false;
+          chart.applyOptions({ crosshair: { horzLine: { visible: true } } });
+        }
         updateHoverAtTime(null);
       } else {
-        const bar = displayCacheRef.current.find((item) => item.time === time);
+        const barIndex = findBarIndex(displayCacheRef.current, time, true);
+        const bar = barIndex >= 0 ? displayCacheRef.current[barIndex] : undefined;
         if (bar && candleRef.current) {
+          if (!linkedCrosshairActiveRef.current) {
+            linkedCrosshairActiveRef.current = true;
+            chart.applyOptions({ crosshair: { horzLine: { visible: false } } });
+          }
           chart.setCrosshairPosition(bar.close, time as Time, candleRef.current);
           updateHoverAtTime(time);
         } else {
           chart.clearCrosshairPosition();
+          if (linkedCrosshairActiveRef.current) {
+            linkedCrosshairActiveRef.current = false;
+            chart.applyOptions({ crosshair: { horzLine: { visible: true } } });
+          }
           updateHoverAtTime(null);
         }
       }
@@ -798,10 +978,49 @@ export default function Chart({
 
     // Right-click anywhere in the chart -> open the custom context menu.
     const el = containerRef.current;
+    const onDoubleClick = async (e: MouseEvent) => {
+      const series = candleRef.current;
+      if (!series || copyableZonePricesRef.current.length === 0 || !el) return;
+      const rect = el.getBoundingClientRect();
+      const y = e.clientY - rect.top;
+      let closestPrice: number | null = null;
+      let minPixelDiff = Infinity;
+      for (const price of copyableZonePricesRef.current) {
+        const lineY = series.priceToCoordinate(price);
+        if (lineY == null) continue;
+        const diff = Math.abs(lineY - y);
+        if (diff < minPixelDiff) {
+          minPixelDiff = diff;
+          closestPrice = price;
+        }
+      }
+      if (closestPrice == null || minPixelDiff > 10) return;
+
+      const formatted = String(Math.round(closestPrice));
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          try {
+            await navigator.clipboard.writeText(formatted);
+          } catch {
+            if (!copyToLegacyClipboard(formatted)) {
+              throw new Error("Clipboard write was rejected");
+            }
+          }
+        } else if (!copyToLegacyClipboard(formatted)) {
+          throw new Error("Clipboard copy command was rejected");
+        }
+        setCopyToast(formatted);
+        if (copyToastTimerRef.current) clearTimeout(copyToastTimerRef.current);
+        copyToastTimerRef.current = setTimeout(() => setCopyToast(null), 3_000);
+      } catch (err) {
+        console.error("[clipboard] could not copy chart level:", err);
+      }
+    };
     const onContext = (e: MouseEvent) => {
       e.preventDefault();
       setContextMenu({ x: e.clientX, y: e.clientY });
     };
+    el?.addEventListener("dblclick", onDoubleClick);
     el?.addEventListener("contextmenu", onContext);
 
     // Place the default view once the cell has a real size AND history is in.
@@ -821,7 +1040,15 @@ export default function Chart({
 
     return () => {
       ro.disconnect();
+      if (linkedCrosshairFrameRef.current !== null) {
+        cancelAnimationFrame(linkedCrosshairFrameRef.current);
+        linkedCrosshairFrameRef.current = null;
+      }
+      pendingLinkedCrosshairRef.current = null;
+      el?.removeEventListener("dblclick", onDoubleClick);
       el?.removeEventListener("contextmenu", onContext);
+      el?.removeEventListener("pointerenter", onPointerEnter);
+      if (copyToastTimerRef.current) clearTimeout(copyToastTimerRef.current);
       const sibs = siblingScales?.current;
       if (sibs) {
         const i = sibs.indexOf(ts);
@@ -860,6 +1087,7 @@ export default function Chart({
       try { series.removePriceLine(pl); } catch (_) { /* already removed */ }
     }
     zoneLinesRef.current = [];
+    copyableZonePricesRef.current = [];
     if (!zones) return;
 
     const add = (
@@ -869,9 +1097,10 @@ export default function Chart({
       style: LineStyle,
       title: string,
     ) => {
+      const roundedPrice = roundHalf(price);
       zoneLinesRef.current.push(
         series.createPriceLine({
-          price: roundHalf(price),
+          price: roundedPrice,
           color,
           lineWidth: width,
           lineStyle: style,
@@ -879,6 +1108,7 @@ export default function Chart({
           title,
         }),
       );
+      copyableZonePricesRef.current.push(roundedPrice);
     };
 
     if (lineToggles.weekly && zones.prevWeek) {
@@ -910,7 +1140,18 @@ export default function Chart({
         : level.color === "green"
           ? "#7cfc00"
           : "#ffeb3b";
-      add(level.price, color, 3, LineStyle.Solid, `C${i + 1}`);
+      const roundedPrice = roundHalf(level.price);
+      zoneLinesRef.current.push(
+        series.createPriceLine({
+          price: roundedPrice,
+          color,
+          lineWidth: 3,
+          lineStyle: LineStyle.Solid,
+          axisLabelVisible: true,
+          title: `C${i + 1}`,
+        }),
+      );
+      copyableZonePricesRef.current.push(roundedPrice);
     }
   }, [zones, lineToggles, customLevels, chartReady]);
 
@@ -927,9 +1168,10 @@ export default function Chart({
     });
 
     sock.on("history", (payload: Record<string, Kline[]>) => {
-      const raw = payload[interval];
-      if (!raw || !candleRef.current) return;
-      seedHistory(interval, raw);
+      const snapshot = payload[interval];
+      if (!snapshot || !candleRef.current) return;
+      seedHistory(interval, snapshot);
+      const raw = getHistory(interval);
       let series: Kline[];
       if (heikin) {
         const built = heikinSeriesAndAnchor(raw);
@@ -955,14 +1197,13 @@ export default function Chart({
         };
       }));
       displayCacheRef.current = series;
+      rebuildHoverData(raw, series);
       if (series.length > 0) {
         const lastBar = series[series.length - 1]!;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         futureRef.current?.setData(futureWhitespace(lastBar.time, interval) as any);
-        setLastPrice(lastBar.close);
         if (interval === "1m" && !heikin) setTabTitle(lastBar.close);
         const first = raw[0]!.open;
-        setChange(first === 0 ? 0 : ((lastBar.close - first) / first) * 100);
         recomputeEmas(raw);
       }
       // Frame the latest candles after layout. Two rAFs wait for autoSize to
@@ -1006,13 +1247,22 @@ export default function Chart({
           cached[cached.length - 1] = finalizedRaw;
           applyLiveKline(interval, finalizedRaw);
 
-          const finalizedHa = toHeikin(cached)[cached.length - 1]!;
+          const anchor = lastClosedHaRef.current;
+          const finalizedHa = toHeikinOne(
+            finalizedRaw,
+            anchor?.open ?? 0,
+            anchor?.close ?? 0,
+            cached.length === 1,
+          );
           lastClosedHaRef.current = { open: finalizedHa.open, close: finalizedHa.close };
           lastHaRef.current = lastClosedHaRef.current;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           candleRef.current.update(finalizedHa as any);
           const displayed = displayCacheRef.current;
-          if (displayed.length > 0) displayed[displayed.length - 1] = finalizedHa;
+          if (displayed.length > 0) {
+            displayed[displayed.length - 1] = finalizedHa;
+            updateHoverData(cached, displayed, displayed.length - 1);
+          }
         }
       }
 
@@ -1028,11 +1278,17 @@ export default function Chart({
       }
       applyLiveKline(interval, bar);
 
-      // Recompute from the canonical raw cache so a missed close packet cannot
-      // leave the rolling HA anchor one bar behind.
+      // Derive the displayed bar from the last closed HA candle; the live
+      // candle never becomes its own rolling anchor.
       let candlePayload: Kline = bar;
       if (heikin) {
-        const ha = toHeikin(cached)[cached.length - 1]!;
+        const anchor = lastClosedHaRef.current;
+        const ha = toHeikinOne(
+          bar,
+          anchor?.open ?? 0,
+          anchor?.close ?? 0,
+          cached.length === 1 && !anchor,
+        );
         if (bar.closed) {
           lastClosedHaRef.current = { open: ha.open, close: ha.close };
           lastHaRef.current = { open: ha.open, close: ha.close };
@@ -1057,7 +1313,6 @@ export default function Chart({
         futureRef.current.setData(futureWhitespace(timeSec, interval) as any);
       }
 
-      setLastPrice(candlePayload.close);
       if (interval === "1m" && !heikin) setTabTitle(bar.close);
 
       // ── EMA update (from the displayed close: raw or Heikin Ashi) ────────
@@ -1070,17 +1325,28 @@ export default function Chart({
       } else if (isSameBar && displayed.length > 0) {
         displayed[displayed.length - 1] = candlePayload;
       }
+      if (displayed.length > 0) {
+        updateHoverData(cached, displayed, displayed.length - 1);
+      }
       if (displayed.length > 0 && emas.length > 0) {
-        const values = displayed.map((c) => c.close);
         for (let i = 0; i < emas.length; i++) {
           const period = emas[i]!;
           const line = emaRefs.current[i];
-          if (!line) continue;
-          if (!emaEnabledRef.current.has(period)) continue;
-          const smoothed = ema(values, period);
-          const tail = smoothed[smoothed.length - 1];
-          if (typeof tail === "number") {
-            line.update({ time: timeSec as Time, value: tail });
+          const previous = emaTailRef.current.get(period);
+          if (!previous) {
+            paintEmas(displayed);
+            break;
+          }
+          const nextPrevious = isNewBar ? previous.value : previous.previous;
+          const alpha = 2 / (period + 1);
+          const value = candlePayload.close * alpha + nextPrevious * (1 - alpha);
+          emaTailRef.current.set(period, {
+            time: timeSec,
+            previous: nextPrevious,
+            value,
+          });
+          if (line && emaEnabledRef.current.has(period)) {
+            line.update({ time: timeSec as Time, value });
           }
         }
       }
@@ -1130,6 +1396,7 @@ export default function Chart({
         series = raw;
       }
       displayCacheRef.current = series;
+      rebuildHoverData(raw, series);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       candleRef.current.setData(series as any);
       deltaRef.current?.setData(raw.map((bar) => {
@@ -1196,7 +1463,8 @@ export default function Chart({
     if (next) {
       createDeltaSeries();
     } else {
-      setDeltaHover(null);
+      if (deltaHoverRef.current) deltaHoverRef.current.style.display = "none";
+      deltaHoverKeyRef.current = null;
       const delta = deltaRef.current;
       if (chart && delta) {
         chart.removeSeries(delta);
@@ -1228,18 +1496,13 @@ export default function Chart({
         >
           footprint
         </button>
-        {hover && (
-          <div className="ohlc-bar">
-            <span><b>O</b> {fmt(hover.open)}</span>
-            <span><b>H</b> {fmt(hover.high)}</span>
-            <span><b>L</b> {fmt(hover.low)}</span>
-            <span><b>C</b> {fmt(hover.close)}</span>
-            <span className={hover.change >= 0 ? "up" : "down"}>
-              {hover.change >= 0 ? "+" : ""}
-              {hover.change.toFixed(2)}%
-            </span>
-          </div>
-        )}
+        <div className="ohlc-bar">
+          <span><b>O</b> <span ref={ohlcOpenRef} /></span>
+          <span><b>H</b> <span ref={ohlcHighRef} /></span>
+          <span><b>L</b> <span ref={ohlcLowRef} /></span>
+          <span><b>C</b> <span ref={ohlcCloseRef} /></span>
+          <span ref={ohlcChangeRef} />
+        </div>
       </div>
 
       {/* Footer removed: no live label, no TZ dropdown per chart.
@@ -1250,19 +1513,15 @@ export default function Chart({
         className="chart-canvas"
         style={{ width: "100%", height: "100%", cursor: "crosshair" }}
       />
-      {deltaHover && (
-        <div
-          className="delta-hover-value"
-          aria-hidden="true"
-          style={{
-            left: deltaHover.left,
-            top: deltaHover.top,
-            color: deltaHover.color,
-          }}
-        >
-          {deltaHover.text}
+      {copyToast && (
+        <div className="copy-toast" role="status">
+          <span className="copy-toast-icon">✓</span>
+          <span>
+            Successfully copied <strong>{copyToast}</strong> to the clipboard
+          </span>
         </div>
       )}
+      <div ref={deltaHoverRef} className="delta-hover-value" aria-hidden="true" />
 
       {/* Right-click context menu — "Reset price scale". */}
       {contextMenu && (

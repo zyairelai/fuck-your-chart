@@ -35,7 +35,11 @@ On boot the Express server fetches **500 historical candles per interval** from 
 
 Each chart subscribes to its own interval, calls `series.update(k)` for the open candle (which mutates in place until the candle closes), and appends a fresh bar on rollover. EMA lines are recomputed on history load and patched on the open candle's tail using a local cache so the overlay tracks the live price smoothly.
 
-Every chart also has a fixed lower footprint-delta histogram, enabled by default and controlled by the `footprint` header toggle. Delta is Binance taker-buy BTC volume minus taker-sell BTC volume for each candle; bars are green for positive delta and red for negative delta. Hover a bar to show its signed integer delta above the bar. Turning the toggle off removes the entire pane. The pane divider is subtle and cannot be dragged.
+The browser saves the most recent 1,000 candles per interval in local storage and restores them immediately on page load; the server's current history snapshot is merged by timestamp so cached older candles remain available and the chart stays ordered. Double-click a weekly, Monday, PDH/PDL/mid, 25%/75%, weekend, or custom level to copy its rounded price to the clipboard.
+
+Use the top-left layout button to mirror the chart columns: 1m raw and 1m Heikin Ashi move left while 5m raw and 3m Heikin Ashi move right. Footprint is enabled by default on the 5m and 1m raw charts and disabled on both Heikin Ashi charts.
+
+The raw charts' footprint-delta histograms are enabled by default and controlled by each chart's `footprint` header toggle. Delta is Binance taker-buy BTC volume minus taker-sell BTC volume for each candle; bars are green for positive delta and red for negative delta. Hover a bar to show its signed integer delta above the bar. Turning the toggle off removes the entire pane. The pane divider is subtle and cannot be dragged.
 
 The two 1-minute charts on the right share their crosshair: hovering either chart aligns the other chart to the same candle time and updates both OHLC and footprint-delta readouts.
 

@@ -46,6 +46,7 @@ export default function Page() {
     oneMinuteCrosshairSync.current[target]?.(time);
   };
   const [tz, setTz] = useState<TzOffset>(8);
+  const [mirroredLayout, setMirroredLayout] = useState(false);
   const [zones, setZones] = useState<Zones | null>(null);
   const [toggles, setToggles] = useState<LineToggles>(DEFAULT_TOGGLES);
   const [customLevels, setCustomLevels] = useState<CustomLevel[]>([]);
@@ -69,28 +70,32 @@ export default function Page() {
     <>
       <TopBar
         onDateChange={onDateChange}
+        mirroredLayout={mirroredLayout}
+        onToggleLayout={() => setMirroredLayout((current) => !current)}
         toggles={toggles}
         onToggle={onToggle}
         onAddCustom={(price, color) => setCustomLevels((prev) => [...prev, { price, color }])}
         onClearCustom={() => setCustomLevels([])}
       />
-      <main className="page">
-        <div className="cell">
+      <main className={`page${mirroredLayout ? " mirrored" : ""}`}>
+        <div className="cell chart-5m">
           <Chart
             interval="5m"
             emas={ALL_EMAS}
             defaultEmaOff={FIVE_M_EMA_OFF}
+            defaultFootprintEnabled
             tz={tz}
             zones={zones}
             lineToggles={toggles}
             customLevels={customLevels}
           />
         </div>
-        <div className="cell">
+        <div className="cell chart-1m-raw">
           <Chart
             interval="1m"
             emas={ALL_EMAS}
             defaultEmaOff={ONE_M_EMA_OFF}
+            defaultFootprintEnabled
             tz={tz}
             zones={zones}
             lineToggles={toggles}
@@ -102,23 +107,25 @@ export default function Page() {
             onLinkedCrosshair={syncRightCrosshair}
           />
         </div>
-        <div className="cell">
+        <div className="cell chart-3m-ha">
           <Chart
             interval="3m"
             heikin
             emas={ALL_EMAS}
+            defaultFootprintEnabled={false}
             tz={tz}
             zones={zones}
             lineToggles={toggles}
             customLevels={customLevels}
           />
         </div>
-        <div className="cell">
+        <div className="cell chart-1m-ha">
           <Chart
             interval="1m"
             heikin
             emas={ALL_EMAS}
             defaultEmaOff={ONE_M_EMA_OFF}
+            defaultFootprintEnabled={false}
             tz={tz}
             zones={zones}
             lineToggles={toggles}

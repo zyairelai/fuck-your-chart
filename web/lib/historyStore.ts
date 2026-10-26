@@ -21,17 +21,67 @@ interface Bucket {
   listeners: Set<Listener>;
   loading: boolean;
   exhausted: boolean;
+  hydrated: boolean;
 }
 
 const buckets = new Map<string, Bucket>();
+const STORAGE_PREFIX = "fuck-your-chart:history:v1:";
+const PERSISTED_BAR_LIMIT = 1_000;
+
+function isKline(value: unknown): value is Kline {
+  if (!value || typeof value !== "object") return false;
+  const bar = value as Record<string, unknown>;
+  return typeof bar.time === "number" && Number.isFinite(bar.time)
+    && typeof bar.open === "number" && Number.isFinite(bar.open)
+    && typeof bar.high === "number" && Number.isFinite(bar.high)
+    && typeof bar.low === "number" && Number.isFinite(bar.low)
+    && typeof bar.close === "number" && Number.isFinite(bar.close)
+    && typeof bar.volume === "number" && Number.isFinite(bar.volume)
+    && typeof bar.takerBuyVolume === "number" && Number.isFinite(bar.takerBuyVolume)
+    && typeof bar.closed === "boolean";
+}
 
 function bucket(interval: string): Bucket {
   let b = buckets.get(interval);
   if (!b) {
-    b = { bars: [], listeners: new Set(), loading: false, exhausted: false };
+    b = {
+      bars: [],
+      listeners: new Set(),
+      loading: false,
+      exhausted: false,
+      hydrated: false,
+    };
     buckets.set(interval, b);
   }
+  if (!b.hydrated && typeof window !== "undefined") {
+    b.hydrated = true;
+    try {
+      const saved = window.localStorage.getItem(`${STORAGE_PREFIX}${interval}`);
+      if (saved) {
+        const parsed: unknown = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.every(isKline)) {
+          b.bars = parsed;
+        } else {
+          console.warn(`[history] ignoring invalid saved ${interval} candles`);
+        }
+      }
+    } catch (err) {
+      console.warn(`[history] could not restore saved ${interval} candles:`, err);
+    }
+  }
   return b;
+}
+
+function persist(interval: string, bars: Kline[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      `${STORAGE_PREFIX}${interval}`,
+      JSON.stringify(bars.slice(-PERSISTED_BAR_LIMIT)),
+    );
+  } catch (err) {
+    console.warn(`[history] could not save ${interval} candles:`, err);
+  }
 }
 
 function notify(interval: string, ev: HistoryEvent) {
@@ -50,12 +100,12 @@ export function getHistory(interval: string): Kline[] {
 
 export function seedHistory(interval: string, bars: Kline[]) {
   const b = bucket(interval);
-  const lastNew = bars[bars.length - 1]?.time;
-  const lastOld = b.bars[b.bars.length - 1]?.time;
-  // Reconnect with a shorter snapshot: keep any older bars we already prepended.
-  if (b.bars.length > bars.length && lastNew === lastOld) return;
-  b.bars = bars.slice();
+  const merged = new Map<number, Kline>();
+  for (const bar of b.bars) merged.set(bar.time, bar);
+  for (const bar of bars) merged.set(bar.time, bar);
+  b.bars = [...merged.values()].sort((a, z) => a.time - z.time);
   b.exhausted = false;
+  persist(interval, b.bars);
 }
 
 export function applyLiveKline(interval: string, k: Kline) {
@@ -66,6 +116,7 @@ export function applyLiveKline(interval: string, k: Kline) {
   } else if (!last || k.time > last.time) {
     b.bars.push(k);
   }
+  if (k.closed) persist(interval, b.bars);
 }
 
 /** Fetch one older page (max 1000) and prepend. Returns how many bars were added. */
@@ -87,6 +138,7 @@ export async function loadOlderHistory(interval: string): Promise<number> {
       return 0;
     }
     b.bars = [...cut, ...b.bars];
+    persist(interval, b.bars);
     notify(interval, { reason: "prepend", prepended: cut.length });
     return cut.length;
   } catch {
