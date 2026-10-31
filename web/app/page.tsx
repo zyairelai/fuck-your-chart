@@ -74,6 +74,23 @@ export default function Page() {
     setCustomLevelsError(null);
   }, []);
 
+  const onDeleteCustomLevel = useCallback(async (price: number) => {
+    try {
+      const res = await fetch(`/api/custom-levels?price=${encodeURIComponent(price)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const result = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(result?.error ?? `Failed to delete custom level (${res.status})`);
+      }
+      const result = (await res.json()) as { customLevels: CustomLevel[] };
+      setCustomLevels(result.customLevels);
+      setCustomLevelsError(null);
+    } catch (err) {
+      setCustomLevelsError(err instanceof Error ? err.message : "Could not delete custom level");
+    }
+  }, []);
+
   useEffect(() => {
     void customLevelsRequest("GET")
       .catch((err: unknown) => {
@@ -117,10 +134,12 @@ export default function Page() {
             emas={ALL_EMAS}
             defaultEmaOff={FIVE_M_EMA_OFF}
             defaultFootprintEnabled={false}
+            defaultLevelsEnabled={true}
             tz={tz}
             zones={zones}
             lineToggles={toggles}
             customLevels={customLevels}
+            onDeleteCustomLevel={onDeleteCustomLevel}
             onChartDoubleClick={() => {
               setExpandedChart((current) => current === "5m" ? null : "5m");
             }}
@@ -132,10 +151,12 @@ export default function Page() {
             emas={ALL_EMAS}
             defaultEmaOff={ONE_M_EMA_OFF}
             defaultFootprintEnabled={false}
+            defaultLevelsEnabled={true}
             tz={tz}
             zones={zones}
             lineToggles={toggles}
             customLevels={customLevels}
+            onDeleteCustomLevel={onDeleteCustomLevel}
             registerTimeScale={registerRightTime}
             siblingScales={oneMinuteTimeScales}
             registerPriceScale={registerRightPriceScale}
@@ -152,10 +173,12 @@ export default function Page() {
             heikin
             emas={ALL_EMAS}
             defaultFootprintEnabled={false}
+            defaultLevelsEnabled={false}
             tz={tz}
             zones={zones}
             lineToggles={toggles}
             customLevels={customLevels}
+            onDeleteCustomLevel={onDeleteCustomLevel}
             onChartDoubleClick={() => {
               setExpandedChart((current) => current === "3m" ? null : "3m");
             }}
@@ -168,10 +191,12 @@ export default function Page() {
             emas={ALL_EMAS}
             defaultEmaOff={ONE_M_EMA_OFF}
             defaultFootprintEnabled={false}
+            defaultLevelsEnabled={true}
             tz={tz}
             zones={zones}
             lineToggles={toggles}
             customLevels={customLevels}
+            onDeleteCustomLevel={onDeleteCustomLevel}
             registerTimeScale={registerRightTime}
             siblingScales={oneMinuteTimeScales}
             registerPriceScale={registerRightPriceScale}

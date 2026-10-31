@@ -18,7 +18,7 @@ import { fileURLToPath } from "url";
 import cors from "cors";
 import { Server as IOServer } from "socket.io";
 
-import { klinesFutures, klinesPages, streamKlines, streamLastPrice } from "./binance.js";
+import { Kline, klinesFutures, klinesPages, streamKlines, streamLastPrice } from "./binance.js";
 
 const SYMBOL = "btcusdt";
 // Fixed layout: 5m raw (top-left), 3m HA (bottom-left), 1m raw + HA (right).
@@ -50,7 +50,7 @@ const io = new IOServer(server, {
  */
 const HISTORY_LIMIT = 50_000;
 const BOOT_PAGES = 10;
-const history = new Map<Interval, unknown[]>();
+const history = new Map<Interval, Kline[]>();
 const customLevels: { price: number; color: "red" | "yellow" | "green" }[] = [];
 
 function isCustomLevelColor(value: unknown): value is "red" | "yellow" | "green" {
@@ -95,16 +95,21 @@ const liveStream = streamKlines(SYMBOL, [...DEFAULT_INTERVALS], (interval, k) =>
   const bars = history.get(intervalKey);
   if (!bars) return;
   const last = bars[bars.length - 1] as { time: number } | undefined;
-  if (last && last.time === k.time) {
+  if (!last) {
+    bars.push(k);
+  } else if (last.time === k.time) {
     // update open candle in place
     bars[bars.length - 1] = k;
-  } else if (k.closed || !last || k.time > last.time) {
-    // new bar: append (or roll over if the gap is large)
-    if (last && k.time > last.time + 1) {
-      // trim stale closed bars beyond the limit
-      while (bars.length > HISTORY_LIMIT) bars.shift();
-    }
+  } else if (k.time > last.time) {
+    // new bar: append (strictly increasing timestamps)
     bars.push(k);
+    while (bars.length > HISTORY_LIMIT) bars.shift();
+  } else {
+    // k.time < last.time: older candle update; find and update in-place, never append
+    const idx = bars.findIndex((b) => b.time === k.time);
+    if (idx >= 0) {
+      bars[idx] = k;
+    }
   }
   io.emit("kline", { interval, k });
 });
@@ -159,8 +164,24 @@ app.post("/api/custom-levels", (req, res) => {
   res.status(201).json({ customLevels });
 });
 
-app.delete("/api/custom-levels", (_req, res) => {
-  customLevels.length = 0;
+app.delete("/api/custom-levels", (req, res) => {
+  const queryPrice = req.query.price != null ? Number(req.query.price) : undefined;
+  const bodyPrice = req.body && typeof req.body === "object" && "price" in req.body
+    ? Number((req.body as { price?: unknown }).price)
+    : undefined;
+  const targetPrice = queryPrice ?? bodyPrice;
+
+  if (targetPrice !== undefined && Number.isFinite(targetPrice)) {
+    const roundedTarget = Math.round(targetPrice * 2) / 2;
+    const index = customLevels.findIndex(
+      (l) => Math.abs(Math.round(l.price * 2) / 2 - roundedTarget) < 0.01,
+    );
+    if (index >= 0) {
+      customLevels.splice(index, 1);
+    }
+  } else {
+    customLevels.length = 0;
+  }
   res.json({ customLevels });
 });
 

@@ -12,7 +12,7 @@ export interface Kline {
   closed: boolean;
 }
 
-export type HistoryEvent = { reason: "seed" | "prepend"; prepended: number };
+export type HistoryEvent = { reason: "seed" | "prepend" | "reconcile"; prepended: number };
 
 type Listener = (ev: HistoryEvent) => void;
 
@@ -25,13 +25,13 @@ interface Bucket {
 }
 
 const buckets = new Map<string, Bucket>();
-const STORAGE_PREFIX = "fuck-your-chart:history:v1:";
+const STORAGE_PREFIX = "fuck-your-chart:history:v2:";
 const PERSISTED_BAR_LIMIT = 1_000;
 
 function isKline(value: unknown): value is Kline {
   if (!value || typeof value !== "object") return false;
   const bar = value as Record<string, unknown>;
-  return typeof bar.time === "number" && Number.isFinite(bar.time)
+  return typeof bar.time === "number" && Number.isFinite(bar.time) && bar.time > 0
     && typeof bar.open === "number" && Number.isFinite(bar.open)
     && typeof bar.high === "number" && Number.isFinite(bar.high)
     && typeof bar.low === "number" && Number.isFinite(bar.low)
@@ -39,6 +39,16 @@ function isKline(value: unknown): value is Kline {
     && typeof bar.volume === "number" && Number.isFinite(bar.volume)
     && typeof bar.takerBuyVolume === "number" && Number.isFinite(bar.takerBuyVolume)
     && typeof bar.closed === "boolean";
+}
+
+function cleanAndSort(bars: Kline[]): Kline[] {
+  const map = new Map<number, Kline>();
+  for (const bar of bars) {
+    if (isKline(bar)) {
+      map.set(bar.time, bar);
+    }
+  }
+  return [...map.values()].sort((a, z) => a.time - z.time);
 }
 
 function bucket(interval: string): Bucket {
@@ -60,7 +70,7 @@ function bucket(interval: string): Bucket {
       if (saved) {
         const parsed: unknown = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.every(isKline)) {
-          b.bars = parsed;
+          b.bars = cleanAndSort(parsed);
         } else {
           console.warn(`[history] ignoring invalid saved ${interval} candles`);
         }
@@ -100,12 +110,67 @@ export function getHistory(interval: string): Kline[] {
 
 export function seedHistory(interval: string, bars: Kline[]) {
   const b = bucket(interval);
-  const merged = new Map<number, Kline>();
-  for (const bar of b.bars) merged.set(bar.time, bar);
-  for (const bar of bars) merged.set(bar.time, bar);
-  b.bars = [...merged.values()].sort((a, z) => a.time - z.time);
+  const map = new Map<number, Kline>();
+  for (const bar of b.bars) map.set(bar.time, bar);
+  for (const bar of bars) map.set(bar.time, bar);
+  b.bars = cleanAndSort([...map.values()]);
   b.exhausted = false;
   persist(interval, b.bars);
+}
+
+export function reconcileHistory(interval: string, authoritative: Kline[]): Kline[] {
+  const b = bucket(interval);
+  if (!authoritative || authoritative.length === 0) return b.bars;
+
+  const map = new Map<number, Kline>();
+  // Preserve existing older bars not in authoritative
+  for (const bar of b.bars) {
+    map.set(bar.time, bar);
+  }
+  // Overwrite with official authoritative bars
+  for (const bar of authoritative) {
+    map.set(bar.time, bar);
+  }
+
+  // Preserve any newer forming candle that might be after authoritative
+  const lastAuthTime = authoritative[authoritative.length - 1]?.time ?? 0;
+  const currentLast = b.bars[b.bars.length - 1];
+  if (currentLast && currentLast.time > lastAuthTime && !currentLast.closed) {
+    map.set(currentLast.time, currentLast);
+  }
+
+  b.bars = cleanAndSort([...map.values()]);
+  persist(interval, b.bars);
+  return b.bars;
+}
+
+const inFlightPulls = new Map<string, Promise<Kline[]>>();
+
+/** Pull official klines from the server REST endpoint to perfectly align closed candles.
+ *  Multiple charts (e.g. 1m raw + 1m HA) share the single concurrent HTTP request. */
+export async function pullAuthoritativeKlines(interval: string, limit = 200): Promise<Kline[]> {
+  const existing = inFlightPulls.get(interval);
+  if (existing) return existing;
+
+  const pullPromise = (async () => {
+    try {
+      const res = await fetch(`/api/klines/${encodeURIComponent(interval)}?limit=${limit}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const authoritative = (await res.json()) as Kline[];
+      if (Array.isArray(authoritative) && authoritative.length > 0) {
+        return reconcileHistory(interval, authoritative);
+      }
+      return getHistory(interval);
+    } catch (err) {
+      console.warn(`[history] failed to pull authoritative klines for ${interval}:`, err);
+      return getHistory(interval);
+    } finally {
+      inFlightPulls.delete(interval);
+    }
+  })();
+
+  inFlightPulls.set(interval, pullPromise);
+  return pullPromise;
 }
 
 export function applyLiveKline(interval: string, k: Kline) {
