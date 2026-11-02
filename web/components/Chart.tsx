@@ -158,7 +158,11 @@ function intervalSeconds(interval: string): number {
 
 /** Empty future window: 4 hours so 16:00 still covers 19:00–20:00 on every TF. */
 function futureBarCount(interval: string): number {
-  return Math.max(1, Math.ceil((4 * 3600) / intervalSeconds(interval)));
+  const sec = intervalSeconds(interval);
+  if (sec >= 86400) return 6;
+  if (sec >= 14400) return 10;
+  if (sec >= 3600) return 15;
+  return Math.max(10, Math.ceil((4 * 3600) / sec));
 }
 
 /** Snap level prices to 0.0 / 0.5 / 1.0 (0.45 → 0.5). */
@@ -171,6 +175,12 @@ function formatCountdown(interval: string, barTime: number): string {
   const closeTime = barTime + step;
   const now = Math.floor(Date.now() / 1000);
   const remaining = Math.max(0, closeTime - now);
+  if (remaining >= 3600) {
+    const h = Math.floor(remaining / 3600);
+    const m = Math.floor((remaining % 3600) / 60);
+    const s = remaining % 60;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
   const m = Math.floor(remaining / 60);
   const s = remaining % 60;
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
@@ -359,6 +369,13 @@ interface Props {
     sync: LinkedCrosshairSync | null,
   ) => void;
   onLinkedCrosshair?: (id: LinkedCrosshairId, time: number | null) => void;
+  /**
+   * When true: skip all WebSocket subscriptions. On mount, fetch a one-time
+   * REST snapshot from /api/klines/:interval and display it frozen.
+   * No live updates, no countdown, no close-price line.
+   * Tab refresh reverts to default (5m/3m + WebSocket).
+   */
+  staticMode?: boolean;
 }
 
 export default function Chart({
@@ -381,6 +398,7 @@ export default function Chart({
   linkedCrosshairId,
   registerLinkedCrosshair,
   onLinkedCrosshair,
+  staticMode = false,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -1508,9 +1526,9 @@ export default function Chart({
         add(zones.prevDay.p25, "#ffeb3b", 2, LineStyle.Dotted, "25%");
       }
       if (lineToggles.weekend && zones.weekend) {
-        add(zones.weekend.high, "#ffffff", 2, LineStyle.Solid, "WH");
-        add(zones.weekend.mid, "rgba(255,255,255,0.85)", 2, LineStyle.Dashed, "WM");
-        add(zones.weekend.low, "#ffffff", 2, LineStyle.Solid, "WL");
+        add(zones.weekend.high, "#42a5f5", 2, LineStyle.Solid, "WH");
+        add(zones.weekend.mid, "rgba(66, 165, 245, 0.85)", 2, LineStyle.Dashed, "WM");
+        add(zones.weekend.low, "#42a5f5", 2, LineStyle.Solid, "WL");
       }
     }
     for (let i = 0; i < customLevels.length; i++) {
@@ -1535,8 +1553,11 @@ export default function Chart({
     scheduleZoneLabelVisibilityUpdate();
   }, [zones, lineToggles, customLevels, chartReady, levelsEnabled]);
 
-  // --- socket: history + live updates --------------------------------------
+  // --- socket: history + live updates (skipped in staticMode) -------------
   useEffect(() => {
+    // In static mode we skip all socket subscriptions entirely — no live data.
+    if (staticMode) return;
+
     const sock = getSharedSocket();
 
     const onConnect = () => setStatus("live");
@@ -1810,10 +1831,68 @@ export default function Chart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [interval, heikin]);
 
+  // --- staticMode: one-time REST fetch, no live data -----------------------
+  useEffect(() => {
+    if (!staticMode) return;
+    // Mark as "off" (no websocket) while loading, then "live" once data loaded.
+    setStatus("off");
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch(`/api/klines/${encodeURIComponent(interval)}?limit=500`);
+        if (!res.ok || cancelled) return;
+        const snapshot = (await res.json()) as Kline[];
+        if (cancelled || !candleRef.current || snapshot.length === 0) return;
+
+        const raw = snapshot.map((k) => ({
+          ...k,
+          time: k.time > 1e10 ? Math.floor(k.time / 1000) : k.time,
+        }));
+
+        cacheRef.current = raw.slice();
+
+        let series: Kline[];
+        if (heikin) {
+          const built = heikinSeriesAndAnchor(raw);
+          series = built.series;
+          lastClosedHaRef.current = built.lastClosed;
+          lastHaRef.current = built.lastClosed;
+        } else {
+          series = raw;
+          lastClosedHaRef.current = null;
+          lastHaRef.current = null;
+        }
+        displayCacheRef.current = series;
+        rebuildHoverData(raw, series);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        candleRef.current.setData(series as any);
+        deltaRef.current?.setData(raw.map((bar) => {
+          const value = candleDelta(bar);
+          return { time: bar.time as Time, value, color: value >= 0 ? "#26a69a" : "#ef5350" };
+        }));
+        // No future whitespace for static charts — frozen snapshot.
+        recomputeEmas(raw);
+        paintLatestOhlc();
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => applyDefaultView());
+        });
+        setStatus("live");
+      } catch (err) {
+        if (!cancelled) console.warn(`[chart] static fetch failed for ${interval}:`, err);
+      }
+    };
+    void load();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interval, heikin, staticMode]);
+
   // Older history prepended (this pane or a sibling 1m pane). Rebuild the
   // series and shift the visible range by the new bar count so the view
   // does not jump.
   useEffect(() => {
+    // No scroll-back history loading in static mode (frozen snapshot).
+    if (staticMode) return;
     return subscribeHistory(interval, (ev) => {
       if (ev.reason !== "prepend" || ev.prepended <= 0) return;
       const raw = getHistory(interval);
@@ -1987,7 +2066,7 @@ export default function Chart({
       {/* Header — timeframe + level + EMA + foot + OHLC. */}
       <div className="cell-header">
         <span className="tf">
-          {interval}
+          {interval.toLowerCase() === "1d" ? "1D" : interval}
         </span>
         <button
           type="button"

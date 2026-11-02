@@ -48,11 +48,22 @@ function stepDay(dateStr: string, delta: number): string | null {
   return `${ry}-${rm}-${rd}`;
 }
 
+export const TIMEFRAMES = [
+  { label: "3m", value: "3m" },
+  { label: "5m", value: "5m" },
+  { label: "15m", value: "15m" },
+  { label: "1h", value: "1h" },
+  { label: "4h", value: "4h" },
+  { label: "1D", value: "1d" },
+] as const;
+
 interface Props {
   /** Calendar date is the reference day for drawing levels — not the chart window. */
   onDateChange: (date: string) => void;
   toggles: LineToggles;
   onToggle: (key: keyof LineToggles) => void;
+  selectedTimeframe?: string | null;
+  onTimeframeChange: (tf: string | null) => void;
   customLevelsReady: boolean;
   customLevelsError: string | null;
   onAddCustom: (price: number, color: CustomLevelColor) => Promise<void>;
@@ -63,6 +74,8 @@ export default function TopBar({
   onDateChange,
   toggles,
   onToggle,
+  selectedTimeframe = null,
+  onTimeframeChange,
   customLevelsReady,
   customLevelsError,
   onAddCustom,
@@ -232,6 +245,26 @@ export default function TopBar({
 
       <div className="header-divider" />
 
+      {/* Timeframe toggle buttons: 3m 5m 15m 1h 4h 1D */}
+      <div className="timeframe-group">
+        {TIMEFRAMES.map(({ label, value }) => {
+          const isActive = selectedTimeframe === value;
+          return (
+            <button
+              key={value}
+              type="button"
+              className={`timeframe-btn${isActive ? " active" : ""}`}
+              onClick={() => onTimeframeChange(isActive ? null : value)}
+              title={isActive ? `Active: ${label} (click to turn off)` : `Switch left charts to ${label}`}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="header-divider" />
+
       <div className="level-toggles-group">
         <button
           type="button"
@@ -268,7 +301,7 @@ export default function TopBar({
         <button
           type="button"
           className={`toggle-btn${toggles.weekend ? " active" : ""}`}
-          title="Previous weekend high / low (white) and mid (dashed)"
+          title="Previous weekend high / low (blue) and mid (dashed)"
           onClick={() => onToggle("weekend")}
         >
           Weekend

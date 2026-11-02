@@ -84,6 +84,41 @@ html, body {
   flex: 1 1 auto;
 }
 
+.timeframe-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.timeframe-btn {
+  background: transparent;
+  border: none;
+  color: #bfc4ce;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 0 7px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  transition: color 0.15s, background-color 0.15s;
+}
+
+.timeframe-btn:hover {
+  color: #ffffff;
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.timeframe-btn.active {
+  color: #2962ff;
+  font-weight: 700;
+  background-color: rgba(41, 98, 255, 0.12);
+}
+
 .level-toggles-group {
   display: flex;
   align-items: center;

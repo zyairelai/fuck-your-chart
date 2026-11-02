@@ -50,6 +50,42 @@ export default function Page() {
     const target = source === "raw" ? "heikin" : "raw";
     oneMinuteCrosshairSync.current[target]?.(time);
   };
+
+  // ── Left column: when a timeframe is selected, sync raw (top) + HA (bottom) ─
+  const leftTimeScales = useRef<ITimeScaleApi<Time>[]>([]);
+  const leftPriceScales = useRef<IPriceScaleApi[]>([]);
+  const leftCrosshairSync = useRef<Record<LinkedCrosshairId, LinkedCrosshairSync | null>>({
+    raw: null,
+    heikin: null,
+  });
+
+  const registerLeftTime = (api: ITimeScaleApi<Time> | null) => {
+    if (api && !leftTimeScales.current.includes(api))
+      leftTimeScales.current.push(api);
+  };
+  const registerLeftPriceScale = (api: IPriceScaleApi | null) => {
+    if (api && !leftPriceScales.current.includes(api))
+      leftPriceScales.current.push(api);
+  };
+  const registerLeftCrosshair = (
+    id: LinkedCrosshairId,
+    sync: LinkedCrosshairSync | null,
+  ) => {
+    leftCrosshairSync.current[id] = sync;
+  };
+  const syncLeftCrosshair = (source: LinkedCrosshairId, time: number | null) => {
+    const target = source === "raw" ? "heikin" : "raw";
+    leftCrosshairSync.current[target]?.(time);
+  };
+
+  const [selectedTimeframe, setSelectedTimeframe] = useState<string | null>(null);
+
+  const handleTimeframeChange = (tf: string | null) => {
+    leftTimeScales.current = [];
+    leftPriceScales.current = [];
+    leftCrosshairSync.current = { raw: null, heikin: null };
+    setSelectedTimeframe(tf);
+  };
   const [tz, setTz] = useState<TzOffset>(8);
   const [mirroredLayout, setMirroredLayout] = useState(false);
   const [expandedChart, setExpandedChart] = useState<"5m" | "3m" | null>(null);
@@ -114,12 +150,20 @@ export default function Page() {
     setToggles((prev) => ({ ...prev, [key]: !prev[key] }));
   }, []);
 
+  const topInterval = selectedTimeframe ?? "5m";
+  const bottomInterval = selectedTimeframe ?? "3m";
+  const isStaticMode = selectedTimeframe !== null;
+  // Sync props are only wired when a TF is selected — default 5m/3m are independent.
+  const isLeftSynchro = isStaticMode;
+
   return (
     <>
       <TopBar
         onDateChange={onDateChange}
         toggles={toggles}
         onToggle={onToggle}
+        selectedTimeframe={selectedTimeframe}
+        onTimeframeChange={handleTimeframeChange}
         customLevelsReady={customLevelsReady}
         customLevelsError={customLevelsError}
         onAddCustom={(price, color) => customLevelsRequest("POST", { price, color })}
@@ -130,7 +174,8 @@ export default function Page() {
       >
         <div className="cell chart-5m">
           <Chart
-            interval="5m"
+            key={`left-raw-${topInterval}`}
+            interval={topInterval}
             emas={ALL_EMAS}
             defaultEmaOff={FIVE_M_EMA_OFF}
             defaultFootprintEnabled={false}
@@ -140,6 +185,14 @@ export default function Page() {
             lineToggles={toggles}
             customLevels={customLevels}
             onDeleteCustomLevel={onDeleteCustomLevel}
+            staticMode={isStaticMode}
+            registerTimeScale={isLeftSynchro ? registerLeftTime : undefined}
+            siblingScales={isLeftSynchro ? leftTimeScales : undefined}
+            registerPriceScale={isLeftSynchro ? registerLeftPriceScale : undefined}
+            siblingPriceScales={isLeftSynchro ? leftPriceScales : undefined}
+            linkedCrosshairId={isLeftSynchro ? "raw" : undefined}
+            registerLinkedCrosshair={isLeftSynchro ? registerLeftCrosshair : undefined}
+            onLinkedCrosshair={isLeftSynchro ? syncLeftCrosshair : undefined}
             onChartDoubleClick={() => {
               setExpandedChart((current) => current === "5m" ? null : "5m");
             }}
@@ -169,16 +222,25 @@ export default function Page() {
         </div>
         <div className="cell chart-3m-ha">
           <Chart
-            interval="3m"
+            key={`left-ha-${bottomInterval}`}
+            interval={bottomInterval}
             heikin
             emas={ALL_EMAS}
             defaultFootprintEnabled={false}
-            defaultLevelsEnabled={false}
+            defaultLevelsEnabled={selectedTimeframe !== null ? true : false}
             tz={tz}
             zones={zones}
             lineToggles={toggles}
             customLevels={customLevels}
             onDeleteCustomLevel={onDeleteCustomLevel}
+            staticMode={isStaticMode}
+            registerTimeScale={isLeftSynchro ? registerLeftTime : undefined}
+            siblingScales={isLeftSynchro ? leftTimeScales : undefined}
+            registerPriceScale={isLeftSynchro ? registerLeftPriceScale : undefined}
+            siblingPriceScales={isLeftSynchro ? leftPriceScales : undefined}
+            linkedCrosshairId={isLeftSynchro ? "heikin" : undefined}
+            registerLinkedCrosshair={isLeftSynchro ? registerLeftCrosshair : undefined}
+            onLinkedCrosshair={isLeftSynchro ? syncLeftCrosshair : undefined}
             onChartDoubleClick={() => {
               setExpandedChart((current) => current === "3m" ? null : "3m");
             }}

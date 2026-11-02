@@ -23,7 +23,7 @@ import { Kline, klinesFutures, klinesPages, streamKlines, streamLastPrice } from
 const SYMBOL = "btcusdt";
 // Fixed layout: 5m raw (top-left), 3m HA (bottom-left), 1m raw + HA (right).
 // All three intervals are booted eagerly so every chart is ready immediately.
-const DEFAULT_INTERVALS = ["5m", "3m", "1m"] as const;
+const DEFAULT_INTERVALS = ["1m", "3m", "5m", "15m", "1h", "4h", "1d"] as const;
 const ALLOWED_INTERVALS = new Set([
   "1m", "3m", "5m", "15m", "30m",
   "1h", "2h", "4h", "6h", "8h", "12h",
