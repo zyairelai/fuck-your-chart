@@ -168,10 +168,10 @@ html, body {
   z-index: 100;
   max-width: min(360px, 80vw);
   padding: 6px 8px;
-  border: 1px solid rgba(239, 83, 80, 0.5);
+  border: 1px solid rgba(226, 52, 66, 0.5);
   border-radius: 4px;
   background: #1e222d;
-  color: #ef5350;
+  color: #e23442;
   font-size: 11px;
   white-space: normal;
 }
@@ -245,7 +245,7 @@ html, body {
   color: #787b87;
 }
 .custom-level-input:focus {
-  border-color: #ffeb3b;
+  border-color: #f8ea3b;
 }
 .custom-add-btn {
   height: 28px;
@@ -264,8 +264,8 @@ html, body {
   padding: 0;
 }
 .trash-btn:hover {
-  border-color: #ef5350;
-  color: #ef5350;
+  border-color: #e23442;
+  color: #e23442;
   background: #252a37;
 }
 .trash-btn:disabled,
@@ -278,7 +278,7 @@ html, body {
 /* Main 3-chart grid — sits BELOW the top bar. */
 .page {
   display: grid;
-  /* Half / half horizontally: big 3m on the left, two 1m stacked on the right. */
+  /* 1 | 2/3 layout default: 1 on the left (spanning both rows), 2 and 3 stacked on the right */
   grid-template-columns: 1fr 1fr;
   grid-template-rows: 1fr 1fr;
   gap: 4px;
@@ -288,49 +288,42 @@ html, body {
   padding: 4px;
   background: #131722;
 }
-.page.mirrored .chart-1m-raw { grid-column: 1; grid-row: 1; }
-.page.mirrored .chart-5m { grid-column: 2; grid-row: 1; }
-.page.mirrored .chart-1m-ha { grid-column: 1; grid-row: 2; }
-.page.mirrored .chart-3m-ha { grid-column: 2; grid-row: 2; }
 
-/* Expanded mode hides the other higher-timeframe chart. */
-.page.expanded-5m .chart-3m-ha,
-.page.expanded-3m .chart-5m { display: none; }
-.page.expanded-5m:not(.mirrored) .chart-5m,
-.page.expanded-3m:not(.mirrored) .chart-3m-ha {
+/* Default 1 | 2/3: raw on the left, 15m HA top right, 3m HA bottom right */
+.page .chart-main {
   grid-column: 1;
   grid-row: 1 / span 2;
 }
-.page.expanded-5m:not(.mirrored) .chart-1m-raw,
-.page.expanded-3m:not(.mirrored) .chart-1m-raw {
+.page .chart-ha-top {
   grid-column: 2;
   grid-row: 1;
 }
-.page.expanded-5m:not(.mirrored) .chart-1m-ha,
-.page.expanded-3m:not(.mirrored) .chart-1m-ha {
+.page .chart-ha-bottom {
   grid-column: 2;
   grid-row: 2;
 }
-.page.expanded-5m.mirrored .chart-5m,
-.page.expanded-3m.mirrored .chart-3m-ha {
+
+/* Switched 2/3 | 1: 15m HA top left, 3m HA bottom left, raw on the right */
+.page.switched .chart-main,
+.page.mirrored .chart-main {
   grid-column: 2;
   grid-row: 1 / span 2;
 }
-.page.expanded-5m.mirrored .chart-1m-raw,
-.page.expanded-3m.mirrored .chart-1m-raw {
+.page.switched .chart-ha-top,
+.page.mirrored .chart-ha-top {
   grid-column: 1;
   grid-row: 1;
 }
-.page.expanded-5m.mirrored .chart-1m-ha,
-.page.expanded-3m.mirrored .chart-1m-ha {
+.page.switched .chart-ha-bottom,
+.page.mirrored .chart-ha-bottom {
   grid-column: 1;
   grid-row: 2;
 }
 
 .cell {
   position: relative;
-  background: #161a25;
-  border: 1px solid #2a2e39;
+  background: #141823;
+  border: 1px solid #202636;
   border-radius: 4px;
   overflow: hidden;
   cursor: crosshair;
@@ -348,7 +341,7 @@ html, body {
   white-space: nowrap;
   transform: translate(-50%, -100%);
   pointer-events: none;
-  text-shadow: 0 1px 2px #161a25;
+  text-shadow: 0 1px 2px #141823;
 }
 
 .copy-toast {
@@ -388,7 +381,12 @@ html, body {
   pointer-events: auto;
   cursor: default;
 }
-.cell-header .symbol { color: #ffffff; }
+.cell-header .symbol {
+  color: #e0e3eb;
+  font-weight: 600;
+  font-size: 11px;
+  white-space: nowrap;
+}
 .cell-header .tf { color: #ffffff; }
 .cell-header .badge {
   display: inline-flex;
@@ -398,8 +396,8 @@ html, body {
   border-radius: 3px;
   font-size: 10px;
 }
-.cell-header .badge.up { background: rgba(38, 166, 154, 0.15); color: #26a69a; }
-.cell-header .badge.down { background: rgba(239, 83, 80, 0.15); color: #ef5350; }
+.cell-header .badge.up { background: rgba(8, 144, 122, 0.15); color: #08907a; }
+.cell-header .badge.down { background: rgba(226, 52, 66, 0.15); color: #e23442; }
 
 /* Inline EMA legend chips — match sample: orange (9/50), green (21), pink (200).
    Now a clickable <button>: toggles that EMA line on/off. The "off" chip is
@@ -512,8 +510,8 @@ html, body {
   pointer-events: none;
 }
 .ohlc-bar b { color: #787b87; font-weight: 400; margin-right: 3px; }
-.ohlc-bar .up { color: #26a69a; }
-.ohlc-bar .down { color: #ef5350; }
+.ohlc-bar .up { color: #08907a; }
+.ohlc-bar .down { color: #e23442; }
 
 /* Global TZ dropdown — fixed bottom-right, aligned with LWC's time-axis strip.
    LWC time-axis is 28px tall. Page padding = 4px, cell border = 1px → 5px gap. */
@@ -615,8 +613,8 @@ html, body {
   align-items: center;
   gap: 6px;
 }
-.status .dot { width: 6px; height: 6px; border-radius: 50%; background: #26a69a; }
-.status .dot.off { background: #ef5350; }
+.status .dot { width: 6px; height: 6px; border-radius: 50%; background: #08907a; }
+.status .dot.off { background: #e23442; }
 
 /* ── TopBar date stepper + calendar (ported from bitcoin-history) ────────── */
 .date-controls {

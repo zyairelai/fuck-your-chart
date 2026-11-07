@@ -8,13 +8,9 @@
  */
 
 import React, { useEffect, useRef, useState } from "react";
-import type { CustomLevelColor, LineToggles } from "./Chart";
+import { CUSTOM_LEVEL_COLORS, type CustomLevelColor, type LineToggles } from "./Chart";
 
-const CUSTOM_COLORS: Record<CustomLevelColor, string> = {
-  red: "#ef5350",
-  yellow: "#ffeb3b",
-  green: "#7cfc00",
-};
+const CUSTOM_COLORS: Record<CustomLevelColor, string> = CUSTOM_LEVEL_COLORS;
 
 const MONTH_NAMES = [
   "January","February","March","April","May","June",
@@ -49,6 +45,7 @@ function stepDay(dateStr: string, delta: number): string | null {
 }
 
 export const TIMEFRAMES = [
+  { label: "1m", value: "1m" },
   { label: "3m", value: "3m" },
   { label: "5m", value: "5m" },
   { label: "15m", value: "15m" },

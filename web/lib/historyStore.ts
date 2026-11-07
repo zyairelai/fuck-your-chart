@@ -41,7 +41,7 @@ function isKline(value: unknown): value is Kline {
     && typeof bar.closed === "boolean";
 }
 
-function cleanAndSort(bars: Kline[]): Kline[] {
+export function cleanAndSort(bars: Kline[]): Kline[] {
   const map = new Map<number, Kline>();
   for (const bar of bars) {
     if (isKline(bar)) {
@@ -145,6 +145,42 @@ export function reconcileHistory(interval: string, authoritative: Kline[]): Klin
 }
 
 const inFlightPulls = new Map<string, Promise<Kline[]>>();
+
+/** Fetch latest klines from the server REST endpoint, deduplicating concurrent in-flight requests. */
+export async function fetchLatestKlines(interval: string, limit = 20): Promise<Kline[]> {
+  const key = `${interval}:${limit}`;
+  const existing = inFlightPulls.get(key);
+  if (existing) return existing;
+
+  const pullPromise = (async () => {
+    try {
+      const res = await fetch(`/api/klines/${encodeURIComponent(interval)}?limit=${limit}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = (await res.json()) as Kline[];
+      return raw.map((k) => ({
+        ...k,
+        time: k.time > 1e10 ? Math.floor(k.time / 1000) : k.time,
+      }));
+    } finally {
+      inFlightPulls.delete(key);
+    }
+  })();
+
+  inFlightPulls.set(key, pullPromise);
+  return pullPromise;
+}
+
+export async function fetchOlderKlines(interval: string, endTimeMs: number, limit = 1000): Promise<Kline[]> {
+  const res = await fetch(
+    `/api/klines/${encodeURIComponent(interval)}?endTime=${endTimeMs}&limit=${limit}`,
+  );
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const older = (await res.json()) as Kline[];
+  return older.map((k) => ({
+    ...k,
+    time: k.time > 1e10 ? Math.floor(k.time / 1000) : k.time,
+  }));
+}
 
 /** Pull official klines from the server REST endpoint to perfectly align closed candles.
  *  Multiple charts (e.g. 1m raw + 1m HA) share the single concurrent HTTP request. */

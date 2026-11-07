@@ -15,28 +15,14 @@ import {
   type ITimeScaleApi,
   type Time,
 } from "lightweight-charts";
-import type { Socket } from "socket.io-client";
-import { getSharedSocket } from "../lib/socket";
 import {
-  seedHistory,
-  applyLiveKline,
+  cleanAndSort,
+  fetchLatestKlines,
+  fetchOlderKlines,
   getHistory,
-  loadOlderHistory,
-  subscribeHistory,
-  pullAuthoritativeKlines,
+  seedHistory,
+  type Kline,
 } from "../lib/historyStore";
-
-/** Mirror the server's Kline shape. */
-interface Kline {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-  takerBuyVolume: number;
-  closed: boolean;
-}
 
 
 interface HoverData {
@@ -49,9 +35,6 @@ interface HoverData {
   delta: string;
   deltaColor: string;
 }
-
-type LinkedCrosshairId = "raw" | "heikin";
-type LinkedCrosshairSync = (time: number | null) => void;
 
 /** Heikin Ashi transform — applied client-side from the regular candles. */
 function toHeikin(c: Kline[]): Kline[] {
@@ -125,16 +108,16 @@ function ema(values: number[], period: number): number[] {
  *   200 -> pink    (#e91e63)
  */
 const EMA_COLOR: Record<number, string> = {
-  10: "#ff6d00",
-  20: "#4caf50",
-  50: "#ff9800",
-  200: "#e91e63",
+  10: "#ee6702", // orange
+  20: "#3f9744", // green
+  50: "#ee8f02", // yellow-orange
+  200: "#da1e5e", // pinkish red
 };
 const EMA_LINE_WIDTH: Record<number, number> = {
   10: 1.5,
   20: 1.5,
   50: 2.5,
-  200: 3.5,
+  200: 2.5,
 };
 
 /** Default zoom: ~9px per bar so candles stay readable (CoinGlass-like).
@@ -146,6 +129,13 @@ const RIGHT_GAP_BARS = 2;
 const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const DAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
+function formatTfLabel(interval: string): string {
+  const m = /^(\d+)m$/i.exec(interval);
+  if (m) return m[1]!;
+  if (interval.toLowerCase() === "1d") return "1D";
+  return interval.toUpperCase();
+}
+
 function intervalSeconds(interval: string): number {
   const m = /^(\d+)([mhd])$/i.exec(interval);
   if (!m) return 60;
@@ -156,13 +146,14 @@ function intervalSeconds(interval: string): number {
   return n * 86400;
 }
 
-/** Empty future window: 4 hours so 16:00 still covers 19:00–20:00 on every TF. */
+/** Extended future window for unprinted candles so timestamps extend all the way across. */
 function futureBarCount(interval: string): number {
   const sec = intervalSeconds(interval);
-  if (sec >= 86400) return 6;
-  if (sec >= 14400) return 10;
-  if (sec >= 3600) return 15;
-  return Math.max(10, Math.ceil((4 * 3600) / sec));
+  if (sec >= 86400) return 365; // 1 year for 1d
+  if (sec >= 14400) return 500; // ~83 days for 4h
+  if (sec >= 3600) return 1000; // ~41 days for 1h
+  if (sec >= 1800) return 1200; // 25 days for 30m
+  return 1500;                  // 1500 bars for 1m, 3m, 5m, 15m
 }
 
 /** Snap level prices to 0.0 / 0.5 / 1.0 (0.45 → 0.5). */
@@ -208,9 +199,9 @@ function darken(hex: string, mix = 0.7): string {
   const r = parseInt(m[1]!, 16);
   const g = parseInt(m[2]!, 16);
   const b = parseInt(m[3]!, 16);
-  const dr = Math.round(r * (1 - mix) + 18 * mix);
-  const dg = Math.round(g * (1 - mix) + 22 * mix);
-  const db = Math.round(b * (1 - mix) + 28 * mix);
+  const dr = Math.round(r * (1 - mix) + 20 * mix);
+  const dg = Math.round(g * (1 - mix) + 24 * mix);
+  const db = Math.round(b * (1 - mix) + 35 * mix);
   return `rgb(${dr}, ${dg}, ${db})`;
 }
 
@@ -231,10 +222,10 @@ function fmtTime(t: number, tz: TzOffset): string {
 function fmtCrosshairTime(t: Time, tz: TzOffset): string {
   const epoch = t as number;
   const d = new Date((epoch + tz * 3600) * 1000);
-  const dow = DAY[d.getUTCDay()] ?? "";
-  const day = d.getUTCDate();
+  const day = String(d.getUTCDate()).padStart(2, "0");
   const mon = MONTH[d.getUTCMonth()] ?? "";
-  return `${dow} ${day} ${mon} ${fmtTime(epoch, tz)}`;
+  const yr = String(d.getUTCFullYear()).slice(-2);
+  return `${day} ${mon} '${yr}  ${fmtTime(epoch, tz)}`;
 }
 
 function makeLocalization(tz: TzOffset) {
@@ -333,10 +324,22 @@ export interface LineToggles {
 
 export type CustomLevelColor = "red" | "yellow" | "green";
 
+export const CUSTOM_LEVEL_COLORS: Record<CustomLevelColor, string> = {
+  red: "#ef3b43",
+  yellow: "#f8ea3b",
+  green: "#52b758",
+};
+
 export interface CustomLevel {
   price: number;
   color: CustomLevelColor;
 }
+
+export type LinkedCrosshairId = "raw" | "heikin";
+export type LinkedCrosshairSync = (time: number | null) => void;
+
+const DEFAULT_EMAS: number[] = [10, 20, 50, 200];
+const DEFAULT_EMA_OFF: number[] = [];
 
 interface Props {
   /** Timeframe string from Binance ("1m", "3m", "5m"). */
@@ -345,6 +348,8 @@ interface Props {
   emas?: number[];
   /** EMAs that should start in the OFF state (line hidden, chip darkened). */
   defaultEmaOff?: number[];
+  /** Whether footprint is supported on this chart. */
+  allowFootprint?: boolean;
   /** Whether the footprint pane is visible on first mount. */
   defaultFootprintEnabled?: boolean;
   /** Whether the price levels (zones and custom) are visible on first mount. */
@@ -356,49 +361,36 @@ interface Props {
   lineToggles?: LineToggles;
   customLevels?: CustomLevel[];
   onDeleteCustomLevel?: (price: number) => void;
-  /** Register this chart's time scale so siblings can mirror zoom/pan. */
+  onChartDoubleClick?: () => void;
   registerTimeScale?: (api: ITimeScaleApi<Time> | null) => void;
   siblingScales?: React.MutableRefObject<ITimeScaleApi<Time>[]>;
-  /** Price scales to synchronize while this chart's price axis is dragged. */
-  registerPriceScale?: (api: IPriceScaleApi | null) => void;
-  siblingPriceScales?: React.MutableRefObject<IPriceScaleApi[]>;
-  onChartDoubleClick?: () => void;
   linkedCrosshairId?: LinkedCrosshairId;
   registerLinkedCrosshair?: (
     id: LinkedCrosshairId,
     sync: LinkedCrosshairSync | null,
   ) => void;
   onLinkedCrosshair?: (id: LinkedCrosshairId, time: number | null) => void;
-  /**
-   * When true: skip all WebSocket subscriptions. On mount, fetch a one-time
-   * REST snapshot from /api/klines/:interval and display it frozen.
-   * No live updates, no countdown, no close-price line.
-   * Tab refresh reverts to default (5m/3m + WebSocket).
-   */
-  staticMode?: boolean;
 }
 
 export default function Chart({
   interval,
   heikin = false,
-  emas = [],
-  defaultEmaOff = [],
+  emas = DEFAULT_EMAS,
+  defaultEmaOff = DEFAULT_EMA_OFF,
+  allowFootprint = true,
   defaultFootprintEnabled = false,
-  defaultLevelsEnabled = interval !== "3m",
+  defaultLevelsEnabled = true,
   tz = 0,
   zones = null,
   lineToggles = { weekly: true, monday: false, pdhlm: true, fibb: false, weekend: false },
   customLevels = [],
   onDeleteCustomLevel,
+  onChartDoubleClick,
   registerTimeScale,
   siblingScales,
-  registerPriceScale,
-  siblingPriceScales,
-  onChartDoubleClick,
   linkedCrosshairId,
   registerLinkedCrosshair,
   onLinkedCrosshair,
-  staticMode = false,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -410,7 +402,6 @@ export default function Chart({
   const emaRefs = useRef<ISeriesApi<"Line">[]>([]);
   /** Close price line with countdown timer title ("04:59"), following actual raw price on all charts. */
   const closeLineRef = useRef<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null>(null);
-  /** Last closed bar EMA values: {period → closedEma}. Live forming candle EMA is derived smoothly from this without mutating closed state. */
   const lastClosedEmaRef = useRef<Map<number, number>>(new Map());
   const rightScaleRef = useRef<IPriceScaleApi | null>(null);
   const cacheRef = useRef<Kline[]>([]);
@@ -425,47 +416,26 @@ export default function Chart({
   }[]>([]);
   const copyableZonePricesRef = useRef<number[]>([]);
   const zoneLabelFrameRef = useRef<number | null>(null);
-  /**
-   * Heikin Ashi rolling state — two slots:
-   *
-   * `lastClosedHaRef` — the HA open/close of the most-recently **closed** bar.
-   *   This is the stable anchor used as `prevHAOpen / prevHAClose` when we
-   *   compute the live (still-open) bar.  It only advances when `k.closed`.
-   *
-   * `lastHaRef` — kept for backwards-compat (history seeding); always equals
-   *   `lastClosedHaRef` after every closed bar.
-   *
-   * Why two refs?  Because Binance pushes a tick every ~250 ms for the
-   * still-open bar.  If we overwrote `lastHaRef` on every tick, the rolling
-   * HA open of the *next* bar (= (prevHAOpen + prevHAClose) / 2) would be
-   * derived from an intra-bar mid-state instead of the settled OHLC of the
-   * closed bar, causing the HA chain to drift visually.
-   */
+
   const lastHaRef = useRef<{ open: number; close: number } | null>(null);
   const lastClosedHaRef = useRef<{ open: number; close: number } | null>(null);
   /** True while the user's visible range covers the latest bar. When the user
    *  drags left into history we set this to false and stop auto-following. */
   const pinnedToRightRef = useRef(true);
-  /** Skip 1m sibling range copies while we are still placing the default view. */
-  const suppressTimeSyncRef = useRef(true);
+  const pointerInsideChartRef = useRef(false);
+  const suppressTimeSyncRef = useRef(false);
   const suppressLinkedCrosshairRef = useRef(false);
-  const linkedCrosshairGenerationRef = useRef(0);
   const lastLinkedCrosshairTimeRef = useRef<number | null>(null);
   const pendingLinkedCrosshairRef = useRef<{ time: number | null } | null>(null);
   const linkedCrosshairFrameRef = useRef<number | null>(null);
+  const linkedCrosshairGenerationRef = useRef(0);
   const linkedCrosshairActiveRef = useRef(false);
-  const pointerInsideChartRef = useRef(false);
   const deltaHoverPositionFrameRef = useRef<number | null>(null);
   /** Cached pane1 offsetTop — refreshed on resize, used to avoid layout reflow on every crosshair move. */
   const pane1OffsetTopRef = useRef<number>(0);
-  /** rAF-throttle: pending candle payload waiting to be flushed to the series. */
-  const pendingCandleRef = useRef<Kline | null>(null);
-  /** rAF-throttle: pending per-EMA values {period → value} waiting to flush. */
-  const pendingEmaRef = useRef<Map<number, { time: number; value: number }>>(new Map());
-  /** rAF handle for the candle+EMA flush. */
-  const paintRafRef = useRef<number | null>(null);
   const tabHiddenRef = useRef(false);
-  const missedTicksRef = useRef(false);
+  const loadingOlderRef = useRef(false);
+  const exhaustedOlderRef = useRef(false);
   const [status, setStatus] = useState<"connecting" | "live" | "off">("connecting");
   const [chartReady, setChartReady] = useState(false);
   const ohlcOpenRef = useRef<HTMLSpanElement | null>(null);
@@ -499,8 +469,8 @@ export default function Chart({
     });
   };
   const [copyToast, setCopyToast] = useState<string | null>(null);
-  const [footprintEnabled, setFootprintEnabled] = useState(defaultFootprintEnabled);
-  const footprintEnabledRef = useRef(defaultFootprintEnabled);
+  const [footprintEnabled, setFootprintEnabled] = useState(allowFootprint && defaultFootprintEnabled);
+  const footprintEnabledRef = useRef(allowFootprint && defaultFootprintEnabled);
   const [levelsEnabled, setLevelsEnabled] = useState(defaultLevelsEnabled);
   const levelsEnabledRef = useRef(defaultLevelsEnabled);
   levelsEnabledRef.current = levelsEnabled;
@@ -517,8 +487,7 @@ export default function Chart({
 
   /** Currently-selected display timezone — comes from the top bar. */
 
-  /** Per-EMA on/off state. Default: all on, except those in `defaultEmaOff`
-   *  (e.g. 50/200 on the 1m charts which are noisy by default). */
+  /** Per-EMA on/off state. Default: all on, except those in `defaultEmaOff`. */
   const [emaEnabled, setEmaEnabled] = useState<Set<number>>(() => {
     const s = new Set<number>();
     for (const p of emas) {
@@ -529,16 +498,20 @@ export default function Chart({
   const emaEnabledRef = useRef(emaEnabled);
   emaEnabledRef.current = emaEnabled;
 
-  /** Keep `emaEnabled` in sync if `emas` ever changes. */
+  const emasKey = emas.join(",");
+  /** Keep `emaEnabled` in sync if `emas` ever changes, preserving user toggles. */
   useEffect(() => {
-    setEmaEnabled(() => {
+    setEmaEnabled((prev) => {
       const next = new Set<number>();
       for (const p of emas) {
-        if (!defaultEmaOff.includes(p)) next.add(p);
+        if (prev.has(p)) {
+          next.add(p);
+        }
       }
+      emaEnabledRef.current = next;
       return next;
     });
-  }, [emas, defaultEmaOff]);
+  }, [emasKey]);
 
   /** Candle series the user actually sees — raw OHLC or Heikin Ashi. */
   const displayedBars = (raw: Kline[]): Kline[] => (heikin ? toHeikin(raw) : raw);
@@ -577,7 +550,7 @@ export default function Chart({
     const lastBar = raw[raw.length - 1]!;
     const actualPrice = lastBar.close;
     const isUp = actualPrice >= lastBar.open;
-    const color = isUp ? "#26a69a" : "#ef5350";
+    const color = isUp ? "#08907a" : "#e23442";
     const title = formatCountdown(interval, lastBar.time);
 
     if (!closeLineRef.current) {
@@ -617,7 +590,7 @@ export default function Chart({
       change: `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`,
       changeClass: change >= 0 ? "up" : "down",
       delta: String(Math.trunc(delta)),
-      deltaColor: delta >= 0 ? "#00c853" : "#ef5350",
+      deltaColor: delta >= 0 ? "#08907a" : "#e23442",
     };
     hoverDataRef.current.set(bar.time, data);
     if (hoverKeyRef.current === String(bar.time)) {
@@ -726,7 +699,7 @@ export default function Chart({
       return {
         time: bar.time as Time,
         value,
-        color: value >= 0 ? "#26a69a" : "#ef5350",
+        color: value >= 0 ? "#08907a" : "#e23442",
       };
     }));
   };
@@ -752,9 +725,13 @@ export default function Chart({
 
       if (!line) continue;
       if (!enabled.has(period)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        line.applyOptions({ visible: false } as any);
         line.setData([]);
         continue;
       }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      line.applyOptions({ visible: true } as any);
       const data = smoothed.map((v, j) => ({ time: bars[j]!.time as Time, value: v }));
       line.setData(data);
     }
@@ -817,14 +794,14 @@ export default function Chart({
         return {
           time: bar.time as Time,
           value,
-          color: value >= 0 ? "#26a69a" : "#ef5350",
+          color: value >= 0 ? "#08907a" : "#e23442",
         };
       }));
     }
     const lastBar = series[series.length - 1]!;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     futureRef.current?.setData(futureWhitespace(lastBar.time, interval) as any);
-    if (interval === "1m" && !heikin) setTabTitle(lastBar.close);
+    if (!heikin) setTabTitle(lastBar.close);
     paintEmas(series);
     paintLatestOhlc();
     updateClosePriceLine();
@@ -833,59 +810,138 @@ export default function Chart({
     }
   };
 
-  /** Reconcile closed klines against official Binance REST endpoint.
-   *  Guarantees 100% CoinGlass-identical candles, bar counts, and smooth EMAs. */
-  const reconcileAuthoritative = async () => {
-    if (!candleRef.current) return;
+  const loadOlderHistoryForChart = async () => {
+    if (loadingOlderRef.current || exhaustedOlderRef.current || cacheRef.current.length === 0) return;
+    loadingOlderRef.current = true;
     try {
-      const authoritativeRaw = await pullAuthoritativeKlines(interval, 200);
-      if (!candleRef.current) return;
-
-      const lastAuthTime = authoritativeRaw[authoritativeRaw.length - 1]?.time ?? 0;
-      const currentCache = cacheRef.current;
-      const localLast = currentCache[currentCache.length - 1];
-      const merged = authoritativeRaw.slice();
-      if (localLast && localLast.time > lastAuthTime && !localLast.closed) {
-        merged.push(localLast);
+      const firstTime = cacheRef.current[0]!.time;
+      const endTime = firstTime * 1000 - 1;
+      const older = await fetchOlderKlines(interval, endTime, 1000);
+      const cut = older.filter((bar) => bar.time < firstTime);
+      if (cut.length === 0) {
+        exhaustedOlderRef.current = true;
+        return;
       }
-      cacheRef.current = merged;
+      const raw = cleanAndSort([...cut, ...cacheRef.current]);
+      cacheRef.current = raw;
+      seedHistory(interval, raw);
 
       let series: Kline[];
       if (heikin) {
-        const built = heikinSeriesAndAnchor(cacheRef.current);
+        const built = heikinSeriesAndAnchor(raw);
         series = built.series;
         lastClosedHaRef.current = built.lastClosed;
         lastHaRef.current = built.lastClosed;
       } else {
-        series = cacheRef.current;
-        lastClosedHaRef.current = null;
-        lastHaRef.current = null;
+        series = raw;
       }
       displayCacheRef.current = series;
-      rebuildHoverData(cacheRef.current, series);
+      rebuildHoverData(raw, series);
 
-      if (!tabHiddenRef.current) {
+      if (candleRef.current && chartRef.current) {
+        const ts = chartRef.current.timeScale();
+        const range = ts.getVisibleLogicalRange();
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         candleRef.current.setData(series as any);
         if (footprintEnabledRef.current && deltaRef.current) {
-          deltaRef.current.setData(cacheRef.current.map((b) => {
+          deltaRef.current.setData(raw.map((b) => {
             const dv = candleDelta(b);
             return {
               time: b.time as Time,
               value: dv,
-              color: dv >= 0 ? "#26a69a" : "#ef5350",
+              color: dv >= 0 ? "#08907a" : "#e23442",
             };
           }));
         }
         paintEmas(series);
+        if (range) {
+          ts.setVisibleLogicalRange({
+            from: range.from + cut.length,
+            to: range.to + cut.length,
+          });
+        }
+      }
+    } catch (err) {
+      console.warn(`[chart] load older history failed for ${interval}:`, err);
+    } finally {
+      loadingOlderRef.current = false;
+    }
+  };
+
+  const updateWithLatestBars = (latestBars: Kline[]) => {
+    if (!candleRef.current || latestBars.length === 0) return;
+
+    const raw = cacheRef.current;
+    if (raw.length === 0) {
+      const clean = cleanAndSort(latestBars);
+      cacheRef.current = clean;
+      seedHistory(interval, clean);
+      return;
+    }
+
+    const prevLastTime = raw[raw.length - 1]!.time;
+    const barMap = new Map<number, Kline>();
+    for (const b of raw) barMap.set(b.time, b);
+    for (const b of latestBars) barMap.set(b.time, b);
+    const merged = cleanAndSort([...barMap.values()]);
+    cacheRef.current = merged;
+    seedHistory(interval, merged);
+
+    const newLastTime = merged[merged.length - 1]!.time;
+    const isNewBar = newLastTime > prevLastTime;
+    const newBarCount = isNewBar
+      ? merged.filter((b) => b.time > prevLastTime).length
+      : 0;
+
+    let series: Kline[];
+    if (heikin) {
+      const built = heikinSeriesAndAnchor(merged);
+      series = built.series;
+      lastClosedHaRef.current = built.lastClosed;
+      lastHaRef.current = built.lastClosed;
+    } else {
+      series = merged;
+      lastClosedHaRef.current = null;
+      lastHaRef.current = null;
+    }
+
+    displayCacheRef.current = series;
+    rebuildHoverData(merged, series);
+
+    if (!tabHiddenRef.current) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      candleRef.current.setData(series as any);
+      if (footprintEnabledRef.current && deltaRef.current) {
+        deltaRef.current.setData(merged.map((b) => {
+          const dv = candleDelta(b);
+          return {
+            time: b.time as Time,
+            value: dv,
+            color: dv >= 0 ? "#08907a" : "#e23442",
+          };
+        }));
+      }
+      paintEmas(series);
+      if (series.length > 0) {
         const lastBar = series[series.length - 1]!;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         futureRef.current?.setData(futureWhitespace(lastBar.time, interval) as any);
-        paintLatestOhlc();
-        updateClosePriceLine();
+        if (!heikin) setTabTitle(lastBar.close);
       }
-    } catch (err) {
-      console.warn(`[chart] reconcile failed for ${interval}:`, err);
+      paintLatestOhlc();
+      updateClosePriceLine();
+      scheduleZoneLabelVisibilityUpdate();
+
+      if (chartRef.current && pinnedToRightRef.current && isNewBar && prevLastTime > 0) {
+        const ts = chartRef.current.timeScale();
+        const range = ts.getVisibleLogicalRange();
+        if (range) {
+          ts.setVisibleLogicalRange({
+            from: range.from + newBarCount,
+            to: range.to + newBarCount,
+          });
+        }
+      }
     }
   };
 
@@ -941,10 +997,10 @@ export default function Chart({
 
     const chart = createChart(containerRef.current, {
       layout: {
-        background: { color: "transparent" },
-        textColor: "#bfc4ce",
-        fontSize: 12,
-        fontFamily: "Arial, Helvetica, sans-serif",
+        background: { color: "#141823" },
+        textColor: "#848e9c",
+        fontSize: 11,
+        fontFamily: "-apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif",
         panes: {
           enableResize: false,
           separatorColor: "rgba(120, 123, 134, 0.24)",
@@ -961,8 +1017,8 @@ export default function Chart({
       },
       crosshair: {
         mode: CrosshairMode.Normal,
-        vertLine: { color: "rgba(190, 196, 208, 0.7)", width: 1, style: LineStyle.Dashed, labelBackgroundColor: "#2a2e39" },
-        horzLine: { color: "rgba(190, 196, 208, 0.7)", width: 1, style: LineStyle.Dashed, labelBackgroundColor: "#2a2e39" },
+        vertLine: { color: "#8b8f98", width: 1, style: LineStyle.Dashed, labelBackgroundColor: "#333842" },
+        horzLine: { color: "#8b8f98", width: 1, style: LineStyle.Dashed, labelBackgroundColor: "#333842" },
       },
       localization: makeLocalization(tz),
       rightPriceScale: {
@@ -1004,7 +1060,6 @@ export default function Chart({
     // Default right price scale (used by every series on this chart).
     const right = chart.priceScale("right");
     rightScaleRef.current = right;
-    registerPriceScale?.(right);
 
     const refs: ISeriesApi<"Line">[] = new Array(emas.length);
     const addEma = (period: number) => {
@@ -1028,11 +1083,13 @@ export default function Chart({
 
     // Candles render above the slow EMAs; fast EMAs are added after candles.
     const candle = chart.addSeries(CandlestickSeries, {
-      upColor: "#26a69a",
-      downColor: "#ef5350",
-      wickUpColor: "#26a69a",
-      wickDownColor: "#ef5350",
-      borderVisible: false,
+      upColor: "#08907a",
+      downColor: "#e23442",
+      wickUpColor: "#08907a",
+      wickDownColor: "#e23442",
+      borderVisible: true,
+      borderUpColor: "#08907a",
+      borderDownColor: "#e23442",
       priceLineVisible: false,
       lastValueVisible: false,
       priceFormat: PRICE_FORMAT,
@@ -1074,21 +1131,19 @@ export default function Chart({
         return {
           time: bar.time as Time,
           value,
-          color: value >= 0 ? "#26a69a" : "#ef5350",
+          color: value >= 0 ? "#08907a" : "#e23442",
         };
       }));
       const lastBar = series[series.length - 1]!;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       futureRef.current?.setData(futureWhitespace(lastBar.time, interval) as any);
-      const first = savedBars[0]!.open;
-      if (interval === "1m" && !heikin) setTabTitle(lastBar.close);
+      if (!heikin) setTabTitle(lastBar.close);
       recomputeEmas(savedBars);
       paintLatestOhlc();
       updateClosePriceLine();
       requestAnimationFrame(() => applyDefaultView());
     }
 
-    // --- Time-scale sync ----------------------------------------------------
     const ts = chart.timeScale();
     let tOriginating = false;
     const onTimeRange = () => {
@@ -1102,11 +1157,9 @@ export default function Chart({
         const range = ts.getVisibleLogicalRange();
         if (!range) return;
         const cached = cacheRef.current;
-        const totalBars = cached.length + futureBarCount(interval) + RIGHT_GAP_BARS;
-        const distFromRight = totalBars - range.to;
-        pinnedToRightRef.current = distFromRight < 3;
+        pinnedToRightRef.current = range.to >= cached.length - 2;
         if (range.from < 30) {
-          void loadOlderHistory(interval);
+          void loadOlderHistoryForChart();
         }
         for (const sib of siblings) {
           if (sib && sib !== ts) sib.setVisibleLogicalRange(range);
@@ -1153,17 +1206,18 @@ export default function Chart({
     chart.subscribeCrosshairMove(onCrosshair);
     const onPointerEnter = () => {
       pointerInsideChartRef.current = true;
-      if (linkedCrosshairActiveRef.current) {
-        linkedCrosshairActiveRef.current = false;
-      }
-      chart.applyOptions({
-        crosshair: {
-          horzLine: { visible: true, labelVisible: true },
-        },
-      });
     };
     const onPointerLeave = () => {
       pointerInsideChartRef.current = false;
+      if (deltaHoverRef.current) deltaHoverRef.current.style.display = "none";
+      if (linkedCrosshairActiveRef.current) {
+        linkedCrosshairActiveRef.current = false;
+        chart.applyOptions({
+          crosshair: {
+            horzLine: { visible: true, labelVisible: true },
+          },
+        });
+      }
       updateHoverAtTime(null);
       if (linkedCrosshairId && onLinkedCrosshair) {
         lastLinkedCrosshairTimeRef.current = null;
@@ -1308,79 +1362,9 @@ export default function Chart({
         customLevel: matchedCustomLevel,
       });
     };
-    let priceScaleFrame: number | null = null;
-    let priceScalePointerId: number | null = null;
-    const syncPriceScale = () => {
-      updateZoneLabelVisibility();
-      const range = right.getVisibleRange();
-      if (range) {
-        for (const sibling of siblingPriceScales?.current ?? []) {
-          if (sibling === right) continue;
-          const siblingRange = sibling.getVisibleRange();
-          if (
-            !siblingRange
-            || siblingRange.from !== range.from
-            || siblingRange.to !== range.to
-          ) {
-            sibling.setVisibleRange(range);
-          }
-        }
-      }
-      if (priceScalePointerId !== null) {
-        priceScaleFrame = requestAnimationFrame(syncPriceScale);
-      }
-    };
-    const onPriceScalePointerDown = (e: PointerEvent) => {
-      if (e.button !== 0 || !el || right.width() <= 0) return;
-      const rect = el.getBoundingClientRect();
-      if (e.clientX < rect.right - right.width()) return;
-      priceScalePointerId = e.pointerId;
-      if (priceScaleFrame === null) {
-        priceScaleFrame = requestAnimationFrame(syncPriceScale);
-      }
-    };
-    const onPriceScalePointerUp = (e: PointerEvent) => {
-      if (e.pointerId !== priceScalePointerId) return;
-      priceScalePointerId = null;
-      if (priceScaleFrame !== null) {
-        cancelAnimationFrame(priceScaleFrame);
-        priceScaleFrame = null;
-      }
-      syncPriceScale();
-    };
+
     el?.addEventListener("dblclick", onDoubleClick);
     el?.addEventListener("contextmenu", onContext);
-    el?.addEventListener("pointerdown", onPriceScalePointerDown);
-    window.addEventListener("pointerup", onPriceScalePointerUp);
-    window.addEventListener("pointercancel", onPriceScalePointerUp);
-
-    const onVisibilityChange = () => {
-      if (document.hidden) {
-        tabHiddenRef.current = true;
-        if (paintRafRef.current !== null) {
-          cancelAnimationFrame(paintRafRef.current);
-          paintRafRef.current = null;
-        }
-        if (linkedCrosshairFrameRef.current !== null) {
-          cancelAnimationFrame(linkedCrosshairFrameRef.current);
-          linkedCrosshairFrameRef.current = null;
-        }
-        if (zoneLabelFrameRef.current !== null) {
-          cancelAnimationFrame(zoneLabelFrameRef.current);
-          zoneLabelFrameRef.current = null;
-        }
-        if (deltaHoverPositionFrameRef.current !== null) {
-          cancelAnimationFrame(deltaHoverPositionFrameRef.current);
-          deltaHoverPositionFrameRef.current = null;
-        }
-        pendingCandleRef.current = null;
-        pendingEmaRef.current.clear();
-      } else {
-        tabHiddenRef.current = false;
-        void reconcileAuthoritative();
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
 
     // --- Countdown timer (every second) ------------------------------------
     const countdownTimer = setInterval(() => {
@@ -1388,8 +1372,6 @@ export default function Chart({
     }, 1000);
 
     // Place the default view once the cell has a real size AND history is in.
-    // Do not fitContent() on an empty/0-width chart — that is what left the
-    // 1m panes stuck on the left with a huge empty gap.
     let initialViewApplied = false;
     const ro = new ResizeObserver(() => {
       scheduleZoneLabelVisibilityUpdate();
@@ -1406,10 +1388,6 @@ export default function Chart({
 
     return () => {
       ro.disconnect();
-      if (linkedCrosshairFrameRef.current !== null) {
-        cancelAnimationFrame(linkedCrosshairFrameRef.current);
-        linkedCrosshairFrameRef.current = null;
-      }
       if (zoneLabelFrameRef.current !== null) {
         cancelAnimationFrame(zoneLabelFrameRef.current);
         zoneLabelFrameRef.current = null;
@@ -1418,11 +1396,6 @@ export default function Chart({
         cancelAnimationFrame(deltaHoverPositionFrameRef.current);
         deltaHoverPositionFrameRef.current = null;
       }
-      if (paintRafRef.current !== null) {
-        cancelAnimationFrame(paintRafRef.current);
-        paintRafRef.current = null;
-      }
-      if (priceScaleFrame !== null) cancelAnimationFrame(priceScaleFrame);
       clearInterval(countdownTimer);
       if (closeLineRef.current && candleRef.current) {
         try {
@@ -1430,25 +1403,20 @@ export default function Chart({
         } catch (_) { /* ignore */ }
       }
       closeLineRef.current = null;
-      pendingLinkedCrosshairRef.current = null;
       el?.removeEventListener("dblclick", onDoubleClick);
       el?.removeEventListener("contextmenu", onContext);
-      el?.removeEventListener("pointerdown", onPriceScalePointerDown);
       el?.removeEventListener("pointerenter", onPointerEnter);
       el?.removeEventListener("pointerleave", onPointerLeave);
-      window.removeEventListener("pointerup", onPriceScalePointerUp);
-      window.removeEventListener("pointercancel", onPriceScalePointerUp);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
       if (copyToastTimerRef.current) clearTimeout(copyToastTimerRef.current);
+      if (linkedCrosshairFrameRef.current !== null) {
+        cancelAnimationFrame(linkedCrosshairFrameRef.current);
+        linkedCrosshairFrameRef.current = null;
+      }
+      pendingLinkedCrosshairRef.current = null;
       const sibs = siblingScales?.current;
       if (sibs) {
         const i = sibs.indexOf(ts);
         if (i >= 0) sibs.splice(i, 1);
-      }
-      const priceScales = siblingPriceScales?.current;
-      if (priceScales) {
-        const i = priceScales.indexOf(right);
-        if (i >= 0) priceScales.splice(i, 1);
       }
       registerTimeScale?.(null);
       if (linkedCrosshairId) {
@@ -1490,7 +1458,7 @@ export default function Chart({
     const add = (
       price: number,
       color: string,
-      width: 1 | 2 | 3 | 4,
+      width: number,
       style: LineStyle,
       title: string,
     ) => {
@@ -1498,7 +1466,8 @@ export default function Chart({
       const line = series.createPriceLine({
         price: roundedPrice,
         color,
-        lineWidth: width,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        lineWidth: width as any,
         lineStyle: style,
         axisLabelVisible: false,
         title,
@@ -1509,17 +1478,17 @@ export default function Chart({
 
     if (zones) {
       if (lineToggles.weekly && zones.prevWeek) {
-        add(zones.prevWeek.high, "#ce93d8", 2, LineStyle.Solid, "PWH");
-        add(zones.prevWeek.low, "#ce93d8", 2, LineStyle.Solid, "PWL");
+        add(zones.prevWeek.high, "#ce93d8", 2.5, LineStyle.Solid, "PWH");
+        add(zones.prevWeek.low, "#ce93d8", 2.5, LineStyle.Solid, "PWL");
       }
       if (lineToggles.monday && zones.monday) {
         add(zones.monday.high, "#42a5f5", 2, LineStyle.Solid, "MH");
         add(zones.monday.low, "#42a5f5", 2, LineStyle.Solid, "ML");
       }
       if (lineToggles.pdhlm && zones.prevDay) {
-        add(zones.prevDay.high, "#ffffff", 2, LineStyle.Solid, "PDH");
+        add(zones.prevDay.high, "#ffffff", 2.5, LineStyle.Solid, "PDH");
         add(zones.prevDay.mid, "rgba(255,255,255,0.85)", 2, LineStyle.Dashed, "PDM");
-        add(zones.prevDay.low, "#ffffff", 2, LineStyle.Solid, "PDL");
+        add(zones.prevDay.low, "#ffffff", 2.5, LineStyle.Solid, "PDL");
       }
       if (lineToggles.fibb && zones.prevDay) {
         add(zones.prevDay.p75, "#ffeb3b", 2, LineStyle.Dotted, "75%");
@@ -1533,11 +1502,7 @@ export default function Chart({
     }
     for (let i = 0; i < customLevels.length; i++) {
       const level = customLevels[i]!;
-      const color = level.color === "red"
-        ? "#ef5350"
-        : level.color === "green"
-          ? "#7cfc00"
-          : "#ffeb3b";
+      const color = CUSTOM_LEVEL_COLORS[level.color] ?? "#f8ea3b";
       const roundedPrice = roundHalf(level.price);
       const line = series.createPriceLine({
         price: roundedPrice,
@@ -1553,494 +1518,145 @@ export default function Chart({
     scheduleZoneLabelVisibilityUpdate();
   }, [zones, lineToggles, customLevels, chartReady, levelsEnabled]);
 
-  // --- socket: history + live updates (skipped in staticMode) -------------
+  // --- Polling: initial history load + poll every :00, :05, :10, ..., :55 seconds mark ---
   useEffect(() => {
-    // In static mode we skip all socket subscriptions entirely — no live data.
-    if (staticMode) return;
-
-    const sock = getSharedSocket();
-
-    const onConnect = () => setStatus("live");
-    const onDisconnect = () => setStatus("off");
-    const onConnectError = () => setStatus("off");
-
-    if (sock.connected) setStatus("live");
-
-    sock.on("connect", onConnect);
-    sock.on("disconnect", onDisconnect);
-    sock.on("connect_error", onConnectError);
-
-    const onPrice = (p: number) => {
-      if (interval === "1m" && !heikin) setTabTitle(p);
-    };
-
-    const onHistory = (payload: Record<string, Kline[]>) => {
-      const snapshot = payload[interval];
-      if (!snapshot || !candleRef.current) return;
-      seedHistory(interval, snapshot);
-      const raw = getHistory(interval);
-      let series: Kline[];
-      if (heikin) {
-        const built = heikinSeriesAndAnchor(raw);
-        series = built.series;
-        lastClosedHaRef.current = built.lastClosed;
-        lastHaRef.current = built.lastClosed;
-      } else {
-        series = raw;
-        lastHaRef.current = null;
-        lastClosedHaRef.current = null;
-      }
-
-      cacheRef.current = raw.slice();
-      displayCacheRef.current = series;
-      rebuildHoverData(raw, series);
-
-      if (tabHiddenRef.current) {
-        missedTicksRef.current = true;
-        return;
-      }
-
-      // Candles only — future times live on `futureRef` so live `update()`
-      // can still mutate the last real bar.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      candleRef.current.setData(series as any);
-      deltaRef.current?.setData(raw.map((bar) => {
-        const value = candleDelta(bar);
-        return {
-          time: bar.time as Time,
-          value,
-          color: value >= 0 ? "#26a69a" : "#ef5350",
-        };
-      }));
-      if (series.length > 0) {
-        const lastBar = series[series.length - 1]!;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        futureRef.current?.setData(futureWhitespace(lastBar.time, interval) as any);
-        if (interval === "1m" && !heikin) setTabTitle(lastBar.close);
-        const first = raw[0]!.open;
-        recomputeEmas(raw);
-      }
-      paintLatestOhlc();
-      updateClosePriceLine();
-      // Frame the latest candles after layout. Two rAFs wait for autoSize to
-      // pick up the cell's real width (0-width mount otherwise looks empty).
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => applyDefaultView());
-      });
-    };
-
-    const onKline = (msg: { interval: string; k: Kline }) => {
-      if (msg.interval !== interval) return;
-      if (!candleRef.current) return;
-      if (cacheRef.current.length === 0) return;
-      const k = msg.k;
-
-      // ── Timestamp normalisation ──────────────────────────────────────────
-      // Lightweight Charts requires UTC **seconds**.  The server already does
-      // Math.floor(t / 1000) in binance.ts, but we guard again here so any
-      // future raw-ms value is always normalised before touching the series.
-      const timeSec: number =
-        k.time > 1e10 ? Math.floor(k.time / 1000) : k.time;
-      const bar: Kline = { ...k, time: timeSec };
-
-      // ── Per-interval timestamp cache (prevents cross-timeframe pollution) ─
-      // `cacheRef` is scoped to this single Chart instance (one interval),
-      // so each chart keeps its own independent lastTime.
-      const cached = cacheRef.current;
-      const prevTime = cached.length > 0 ? cached[cached.length - 1]!.time : 0;
-
-      // Strict comparison: same time → still-open bar update; greater → new bar.
-      const isNewBar = timeSec > prevTime;
-      const isSameBar = timeSec === prevTime;
-      if (!isNewBar && !isSameBar) {
-        if (!bar.closed) return;
-        const historicalIndex = cached.findIndex((candidate) => candidate.time === timeSec);
-        if (historicalIndex < 0) return;
-        cached[historicalIndex] = bar;
-        applyLiveKline(interval, bar);
-        void reconcileAuthoritative();
-        return;
-      }
-
-      // A stream can deliver the next bar before the prior bar's final update.
-      // Settle that prior bar first so the new HA open uses the correct anchor.
-      if (heikin && isNewBar && cached.length > 0) {
-        const previousRaw = cached[cached.length - 1]!;
-        if (!previousRaw.closed) {
-          const finalizedRaw = { ...previousRaw, closed: true };
-          cached[cached.length - 1] = finalizedRaw;
-          applyLiveKline(interval, finalizedRaw);
-
-          const anchor = lastClosedHaRef.current;
-          const finalizedHa = toHeikinOne(
-            finalizedRaw,
-            anchor?.open ?? 0,
-            anchor?.close ?? 0,
-            cached.length === 1,
-          );
-          lastClosedHaRef.current = { open: finalizedHa.open, close: finalizedHa.close };
-          lastHaRef.current = lastClosedHaRef.current;
-          if (!tabHiddenRef.current) {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            candleRef.current.update(finalizedHa as any);
-          }
-          const displayed = displayCacheRef.current;
-          if (displayed.length > 0) {
-            displayed[displayed.length - 1] = finalizedHa;
-            updateHoverData(cached, displayed, displayed.length - 1);
-          }
-        }
-      }
-
-      // ── RAW cache update ──────────────────────────────────────────────────
-      if (isNewBar) {
-        cached.push(bar);
-      } else if (isSameBar && cached.length > 0) {
-        cached[cached.length - 1] = bar;
-      }
-      applyLiveKline(interval, bar);
-
-      // Derive the displayed bar from the last closed HA candle; the live
-      // candle never becomes its own rolling anchor.
-      let candlePayload: Kline = bar;
-      if (heikin) {
-        const anchor = lastClosedHaRef.current;
-        const ha = toHeikinOne(
-          bar,
-          anchor?.open ?? 0,
-          anchor?.close ?? 0,
-          cached.length === 1 && !anchor,
-        );
-        if (bar.closed) {
-          lastClosedHaRef.current = { open: ha.open, close: ha.close };
-          lastHaRef.current = { open: ha.open, close: ha.close };
-        }
-        candlePayload = ha;
-      }
-
-      const displayed = displayCacheRef.current;
-      if (isNewBar) {
-        displayed.push(candlePayload);
-      } else if (isSameBar && displayed.length > 0) {
-        displayed[displayed.length - 1] = candlePayload;
-      }
-      if (displayed.length > 0) {
-        updateHoverData(cached, displayed, displayed.length - 1);
-      }
-
-      // Whenever a candle closes or rolls over: pull authoritative Binance klines
-      // to keep all panes and EMAs perfectly aligned.
-      if (bar.closed || isNewBar) {
-        void reconcileAuthoritative();
-      }
-
-      // If tab is in background: bypass canvas paint, viewport shift, and EMA series updates!
-      if (tabHiddenRef.current) {
-        missedTicksRef.current = true;
-        return;
-      }
-
-      // ── Close price line + countdown update ──────────────────────────────
-      updateClosePriceLine();
-
-      // ── Series update — rAF-throttled ─────────────────────────────────────
-      pendingCandleRef.current = candlePayload;
-      scheduleZoneLabelVisibilityUpdate();
-
-      if (isNewBar && futureRef.current) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        futureRef.current.setData(futureWhitespace(timeSec, interval) as any);
-      }
-
-      if (interval === "1m" && !heikin) setTabTitle(bar.close);
-
-      // ── EMA live intra-bar update (smooth interpolation from lastClosedEmaRef) ──
-      if (displayed.length > 0 && emas.length > 0) {
-        for (let i = 0; i < emas.length; i++) {
-          const period = emas[i]!;
-          const closedEma = lastClosedEmaRef.current.get(period);
-          if (closedEma === undefined) {
-            paintEmas(displayed);
-            break;
-          }
-          const alpha = 2 / (period + 1);
-          const liveValue = candlePayload.close * alpha + closedEma * (1 - alpha);
-          pendingEmaRef.current.set(period, { time: timeSec, value: liveValue });
-        }
-      }
-
-      // Schedule the actual canvas paint if not already pending.
-      if (paintRafRef.current === null) {
-        paintRafRef.current = requestAnimationFrame(() => {
-          paintRafRef.current = null;
-          // Flush candle.
-          const cp = pendingCandleRef.current;
-          if (cp && candleRef.current) {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            candleRef.current.update(cp as any);
-            pendingCandleRef.current = null;
-          }
-          // Flush delta.
-          if (footprintEnabledRef.current && deltaRef.current && cp) {
-            const dv = candleDelta(cp);
-            deltaRef.current.update({
-              time: cp.time as Time,
-              value: dv,
-              color: dv >= 0 ? "#26a69a" : "#ef5350",
-            });
-          }
-          // Flush EMAs.
-          for (const [period, pt] of pendingEmaRef.current) {
-            const idx = emas.indexOf(period);
-            const line = idx >= 0 ? emaRefs.current[idx] : undefined;
-            if (line && emaEnabledRef.current.has(period)) {
-              line.update({ time: pt.time as Time, value: pt.value });
-            }
-          }
-          pendingEmaRef.current.clear();
-        });
-      }
-
-      // ── Viewport advance ─────────────────────────────────────────────────
-      // Shift the logical range by 1 only when a new bar opens — not on every
-      // intra-bar tick.  Without this guard the chart jumps every ~250 ms.
-      if (chartRef.current && pinnedToRightRef.current && isNewBar) {
-        const ts = chartRef.current.timeScale();
-        const range = ts.getVisibleLogicalRange();
-        if (range) {
-          ts.setVisibleLogicalRange({
-            from: range.from + 1,
-            to: range.to + 1,
-          });
-        }
-      }
-    };
-
-    sock.on("price", onPrice);
-    sock.on("history", onHistory);
-    sock.on("kline", onKline);
-
-    return () => {
-      sock.off("connect", onConnect);
-      sock.off("disconnect", onDisconnect);
-      sock.off("connect_error", onConnectError);
-      sock.off("price", onPrice);
-      sock.off("history", onHistory);
-      sock.off("kline", onKline);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [interval, heikin]);
-
-  // --- staticMode: one-time REST fetch, no live data -----------------------
-  useEffect(() => {
-    if (!staticMode) return;
-    // Mark as "off" (no websocket) while loading, then "live" once data loaded.
-    setStatus("off");
     let cancelled = false;
-    const load = async () => {
+
+    const loadInitial = async () => {
       try {
-        const res = await fetch(`/api/klines/${encodeURIComponent(interval)}?limit=500`);
-        if (!res.ok || cancelled) return;
-        const snapshot = (await res.json()) as Kline[];
+        setStatus("connecting");
+        const snapshot = await fetchLatestKlines(interval, 500);
         if (cancelled || !candleRef.current || snapshot.length === 0) return;
 
-        const raw = snapshot.map((k) => ({
-          ...k,
-          time: k.time > 1e10 ? Math.floor(k.time / 1000) : k.time,
-        }));
-
-        cacheRef.current = raw.slice();
+        const clean = cleanAndSort(snapshot);
+        cacheRef.current = clean;
+        seedHistory(interval, clean);
 
         let series: Kline[];
         if (heikin) {
-          const built = heikinSeriesAndAnchor(raw);
+          const built = heikinSeriesAndAnchor(clean);
           series = built.series;
           lastClosedHaRef.current = built.lastClosed;
           lastHaRef.current = built.lastClosed;
         } else {
-          series = raw;
+          series = clean;
           lastClosedHaRef.current = null;
           lastHaRef.current = null;
         }
         displayCacheRef.current = series;
-        rebuildHoverData(raw, series);
+        rebuildHoverData(clean, series);
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         candleRef.current.setData(series as any);
-        deltaRef.current?.setData(raw.map((bar) => {
-          const value = candleDelta(bar);
-          return { time: bar.time as Time, value, color: value >= 0 ? "#26a69a" : "#ef5350" };
-        }));
-        // No future whitespace for static charts — frozen snapshot.
-        recomputeEmas(raw);
+        if (footprintEnabledRef.current && deltaRef.current) {
+          deltaRef.current.setData(clean.map((b) => {
+            const dv = candleDelta(b);
+            return {
+              time: b.time as Time,
+              value: dv,
+              color: dv >= 0 ? "#08907a" : "#e23442",
+            };
+          }));
+        }
+
+        if (series.length > 0) {
+          const lastBar = series[series.length - 1]!;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          futureRef.current?.setData(futureWhitespace(lastBar.time, interval) as any);
+          if (!heikin) setTabTitle(lastBar.close);
+        }
+
+        recomputeEmas(clean);
         paintLatestOhlc();
+        updateClosePriceLine();
         requestAnimationFrame(() => {
           requestAnimationFrame(() => applyDefaultView());
         });
         setStatus("live");
       } catch (err) {
-        if (!cancelled) console.warn(`[chart] static fetch failed for ${interval}:`, err);
+        if (!cancelled) {
+          console.warn(`[chart] initial fetch failed for ${interval}:`, err);
+          setStatus("off");
+        }
       }
     };
-    void load();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [interval, heikin, staticMode]);
 
-  // Older history prepended (this pane or a sibling 1m pane). Rebuild the
-  // series and shift the visible range by the new bar count so the view
-  // does not jump.
-  useEffect(() => {
-    // No scroll-back history loading in static mode (frozen snapshot).
-    if (staticMode) return;
-    return subscribeHistory(interval, (ev) => {
-      if (ev.reason !== "prepend" || ev.prepended <= 0) return;
-      const raw = getHistory(interval);
-      if (!candleRef.current || !chartRef.current || raw.length === 0) return;
-      if (cacheRef.current[0]?.time === raw[0]?.time) return;
+    void loadInitial();
 
-      suppressTimeSyncRef.current = true;
-      const ts = chartRef.current.timeScale();
-      const range = ts.getVisibleLogicalRange();
-      cacheRef.current = raw.slice();
-      let series: Kline[];
-      if (heikin) {
-        const built = heikinSeriesAndAnchor(raw);
-        series = built.series;
-        lastClosedHaRef.current = built.lastClosed;
-        lastHaRef.current = built.lastClosed;
+    const pollLatest = async () => {
+      if (cancelled || !candleRef.current) return;
+      try {
+        const latest = await fetchLatestKlines(interval, 20);
+        if (cancelled || !candleRef.current || latest.length === 0) return;
+        updateWithLatestBars(latest);
+        setStatus("live");
+      } catch (err) {
+        if (!cancelled) {
+          console.warn(`[chart] poll failed for ${interval}:`, err);
+        }
+      }
+    };
+
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleNextPoll = () => {
+      if (cancelled) return;
+      const now = Date.now();
+      const remainder = now % 5000;
+      // Wait until next 5-second mark (:00, :05, :10, ..., :55) + 50ms buffer
+      const delay = (5000 - remainder) + 50;
+      pollTimer = setTimeout(async () => {
+        await pollLatest();
+        scheduleNextPoll();
+      }, delay);
+    };
+
+    scheduleNextPoll();
+
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        tabHiddenRef.current = true;
       } else {
-        series = raw;
+        tabHiddenRef.current = false;
+        void pollLatest();
       }
-      displayCacheRef.current = series;
-      rebuildHoverData(raw, series);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      candleRef.current.setData(series as any);
-      deltaRef.current?.setData(raw.map((bar) => {
-        const value = candleDelta(bar);
-        return {
-          time: bar.time as Time,
-          value,
-          color: value >= 0 ? "#26a69a" : "#ef5350",
-        };
-      }));
-      if (series.length > 0) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        futureRef.current?.setData(
-          futureWhitespace(series[series.length - 1]!.time, interval) as any,
-        );
-      }
-      paintEmas(series);
-      if (range) {
-        ts.setVisibleLogicalRange({
-          from: range.from + ev.prepended,
-          to: range.to + ev.prepended,
-        });
-      }
-      requestAnimationFrame(() => {
-        suppressTimeSyncRef.current = false;
-      });
-    });
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      if (pollTimer !== null) clearTimeout(pollTimer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, [interval, heikin]);
 
   const fmt = (n: number | null) =>
     n == null ? "—" : n.toLocaleString(undefined, { maximumFractionDigits: 2 });
 
 
-  const toggleEmaPair = (p1: number, p2: number) => {
-    setEmaEnabled((prev) => {
-      const next = new Set(prev);
-      const isNowOn = !(next.has(p1) || next.has(p2));
-      for (const p of [p1, p2]) {
-        if (isNowOn) next.add(p);
-        else next.delete(p);
-        const idx = emas.indexOf(p);
-        const line = idx >= 0 ? emaRefs.current[idx] : undefined;
-        if (line) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          line.applyOptions({ visible: isNowOn } as any);
-          if (!isNowOn) {
-            line.setData([]);
-          } else {
-            const bars = displayCacheRef.current.length > 0
-              ? displayCacheRef.current
-              : displayedBars(cacheRef.current);
-            if (bars.length > 0) {
-              const values = bars.map((b) => b.close);
-              const smoothed = ema(values, p);
-              const data = smoothed.map((v, j) => ({ time: bars[j]!.time as Time, value: v }));
-              line.setData(data);
-            }
-          }
-        }
-      }
-      emaEnabledRef.current = next;
-      return next;
-    });
-  };
-
   // EMA legend chips — CLICKABLE to toggle the line on/off. "Off" chips are
   // darkened (mixed with the dark cell background) so the user can see at a
   // glance which EMAs are active.
-  let emaLegend: React.ReactNode;
-  if (interval === "1m") {
-    const pairs: [number, number][] = [
-      [10, 20],
-      [50, 200],
-    ];
-    emaLegend = pairs.map(([p1, p2]) => {
-      const on1 = emaEnabled.has(p1);
-      const on2 = emaEnabled.has(p2);
-      const pairOn = on1 || on2;
-      const base1 = EMA_COLOR[p1] ?? "#fff";
-      const base2 = EMA_COLOR[p2] ?? "#fff";
-      const bg1 = on1 ? base1 : darken(base1, 0.7);
-      const bg2 = on2 ? base2 : darken(base2, 0.7);
-      const text1 = on1 ? "#0b0e13" : "#787b87";
-      const text2 = on2 ? "#0b0e13" : "#787b87";
-      return (
-        <button
-          key={`${p1}-${p2}`}
-          type="button"
-          className={`ema-chip-pair${pairOn ? "" : " off"}`}
-          title={`EMA ${p1} & ${p2} — click to ${pairOn ? "hide" : "show"}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            toggleEmaPair(p1, p2);
-          }}
-        >
-          <span className="ema-chip-segment" style={{ background: bg1, color: text1 }}>
-            {p1}
-          </span>
-          <span className="ema-chip-segment" style={{ background: bg2, color: text2 }}>
-            {p2}
-          </span>
-        </button>
-      );
-    });
-  } else {
-    emaLegend = emas.map((p) => {
-      const on = emaEnabled.has(p);
-      const baseColor = EMA_COLOR[p] ?? "#fff";
-      const bg = on ? baseColor : darken(baseColor, 0.7);
-      const text = on ? "#0b0e13" : "#787b87";
-      return (
-        <button
-          key={p}
-          type="button"
-          className={`ema-chip${on ? "" : " off"}`}
-          style={{ background: bg, color: text }}
-          title={`EMA ${p} — click to ${on ? "hide" : "show"}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            toggleEma(p);
-          }}
-        >
-          <span className="chip-num">{p}</span>
-        </button>
-      );
-    });
-  }
+  const emaLegend = emas.map((p) => {
+    const on = emaEnabled.has(p);
+    const baseColor = EMA_COLOR[p] ?? "#fff";
+    const bg = on ? baseColor : darken(baseColor, 0.7);
+    const text = on ? "#0b0e13" : "#787b87";
+    return (
+      <button
+        key={p}
+        type="button"
+        className={`ema-chip${on ? "" : " off"}`}
+        style={{ background: bg, color: text }}
+        title={`EMA ${p} — click to ${on ? "hide" : "show"}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          toggleEma(p);
+        }}
+      >
+        <span className="chip-num">{p}</span>
+      </button>
+    );
+  });
 
   const toggleFootprint = () => {
     const next = !footprintEnabledRef.current;
@@ -2065,8 +1681,8 @@ export default function Chart({
     <>
       {/* Header — timeframe + level + EMA + foot + OHLC. */}
       <div className="cell-header">
-        <span className="tf">
-          {interval.toLowerCase() === "1d" ? "1D" : interval}
+        <span className="symbol">
+          BTCUSDT · {formatTfLabel(interval)} · Binance{heikin ? " · Heikin Ashi" : ""}
         </span>
         <button
           type="button"
@@ -2078,21 +1694,23 @@ export default function Chart({
             setLevelsEnabled((prev) => !prev);
           }}
         >
-          level
+          Level
         </button>
         <div className="ema-group">{emaLegend}</div>
-        <button
-          type="button"
-          className={`footprint-chip${footprintEnabled ? " active" : " off"}`}
-          aria-pressed={footprintEnabled}
-          title={`Footprint delta — click to ${footprintEnabled ? "hide" : "show"}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            toggleFootprint();
-          }}
-        >
-          footprint
-        </button>
+        {allowFootprint && (
+          <button
+            type="button"
+            className={`footprint-chip${footprintEnabled ? " active" : " off"}`}
+            aria-pressed={footprintEnabled}
+            title={`Footprint delta — click to ${footprintEnabled ? "hide" : "show"}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleFootprint();
+            }}
+          >
+            Delta
+          </button>
+        )}
         <div className="ohlc-bar">
           <span><b>O</b> <span ref={ohlcOpenRef} /></span>
           <span><b>H</b> <span ref={ohlcHighRef} /></span>
@@ -2130,6 +1748,19 @@ export default function Chart({
             e.preventDefault();
           }}
         >
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              resetView();
+              setContextMenu(null);
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 12a9 9 0 1 0 3-6.7" />
+              <polyline points="3 4 3 9 8 9" />
+            </svg>
+            Reset Price Scale
+          </button>
           {contextMenu.customLevel && (
             <button
               className="context-menu-item"
@@ -2148,19 +1779,6 @@ export default function Chart({
               Remove this line
             </button>
           )}
-          <button
-            className="context-menu-item"
-            onClick={() => {
-              resetView();
-              setContextMenu(null);
-            }}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M3 12a9 9 0 1 0 3-6.7" />
-              <polyline points="3 4 3 9 8 9" />
-            </svg>
-            Reset Price Scale
-          </button>
         </div>
       )}
 
