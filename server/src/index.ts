@@ -290,6 +290,9 @@ const webNextStatic = path.join(webOut, "_next");
 
 app.use("/_next", express.static(webNextStatic));
 
+// Static assets (favicon.ico, robots.txt, etc.) served directly first:
+app.use(express.static(webOut));
+
 // Fallback: if the user requests a deep path that isn't a real file (e.g.
 // `/some/random/url`), serve the SPA entry so React takes over.
 app.get(/^(?!\/(?:api|socket\.io|_next)\/).*/, (_req, res, next) => {
@@ -297,9 +300,6 @@ app.get(/^(?!\/(?:api|socket\.io|_next)\/).*/, (_req, res, next) => {
     if (err) next();
   });
 });
-
-// Static asset root (favicon, etc.) last.
-app.use(express.static(webOut));
 
 // --- Boot order --------------------------------------------------------------
 const PORT = Number(process.env.PORT ?? 8000);
