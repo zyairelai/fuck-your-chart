@@ -146,6 +146,44 @@ export function reconcileHistory(interval: string, authoritative: Kline[]): Klin
 
 const inFlightPulls = new Map<string, Promise<Kline[]>>();
 
+const FAPI_BASE = "https://fapi.binance.com";
+const SYMBOL = "BTCUSDT";
+
+function parseBinanceKline(raw: (string | number)[]): Kline {
+  const closeTimeMs = Number(raw[6]);
+  return {
+    time: Math.floor(Number(raw[0]) / 1000),
+    open: Number(raw[1]),
+    high: Number(raw[2]),
+    low: Number(raw[3]),
+    close: Number(raw[4]),
+    volume: Number(raw[5]),
+    takerBuyVolume: Number(raw[9]),
+    closed: closeTimeMs < Date.now(),
+  };
+}
+
+/** Fetch klines directly from Binance USDT-M Futures public REST API (CORS-enabled).
+ *  Used as a seamless zero-config fallback when deployed statically on GitHub Pages. */
+export async function fetchFromBinanceDirect(
+  interval: string,
+  limit = 500,
+  endTimeMs?: number,
+): Promise<Kline[]> {
+  const params = new URLSearchParams({
+    symbol: SYMBOL,
+    interval,
+    limit: String(Math.min(Math.max(limit, 1), 1000)),
+  });
+  if (endTimeMs != null && Number.isFinite(endTimeMs)) {
+    params.set("endTime", String(Math.floor(endTimeMs)));
+  }
+  const res = await fetch(`${FAPI_BASE}/fapi/v1/klines?${params.toString()}`);
+  if (!res.ok) throw new Error(`Binance direct fetch failed: ${res.status}`);
+  const raw = (await res.json()) as (string | number)[][];
+  return raw.map(parseBinanceKline);
+}
+
 /** Fetch latest klines from the server REST endpoint, deduplicating concurrent in-flight requests. */
 export async function fetchLatestKlines(interval: string, limit = 20): Promise<Kline[]> {
   const key = `${interval}:${limit}`;
@@ -154,13 +192,19 @@ export async function fetchLatestKlines(interval: string, limit = 20): Promise<K
 
   const pullPromise = (async () => {
     try {
-      const res = await fetch(`/api/klines/${encodeURIComponent(interval)}?limit=${limit}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const raw = (await res.json()) as Kline[];
-      return raw.map((k) => ({
-        ...k,
-        time: k.time > 1e10 ? Math.floor(k.time / 1000) : k.time,
-      }));
+      try {
+        const res = await fetch(`/api/klines/${encodeURIComponent(interval)}?limit=${limit}`);
+        if (res.ok) {
+          const raw = (await res.json()) as Kline[];
+          return raw.map((k) => ({
+            ...k,
+            time: k.time > 1e10 ? Math.floor(k.time / 1000) : k.time,
+          }));
+        }
+      } catch {
+        // Fallback to Binance public REST endpoint (e.g. on GitHub Pages)
+      }
+      return await fetchFromBinanceDirect(interval, limit);
     } finally {
       inFlightPulls.delete(key);
     }
@@ -171,15 +215,21 @@ export async function fetchLatestKlines(interval: string, limit = 20): Promise<K
 }
 
 export async function fetchOlderKlines(interval: string, endTimeMs: number, limit = 1000): Promise<Kline[]> {
-  const res = await fetch(
-    `/api/klines/${encodeURIComponent(interval)}?endTime=${endTimeMs}&limit=${limit}`,
-  );
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const older = (await res.json()) as Kline[];
-  return older.map((k) => ({
-    ...k,
-    time: k.time > 1e10 ? Math.floor(k.time / 1000) : k.time,
-  }));
+  try {
+    const res = await fetch(
+      `/api/klines/${encodeURIComponent(interval)}?endTime=${endTimeMs}&limit=${limit}`,
+    );
+    if (res.ok) {
+      const older = (await res.json()) as Kline[];
+      return older.map((k) => ({
+        ...k,
+        time: k.time > 1e10 ? Math.floor(k.time / 1000) : k.time,
+      }));
+    }
+  } catch {
+    // Fallback
+  }
+  return fetchFromBinanceDirect(interval, limit, endTimeMs);
 }
 
 /** Pull official klines from the server REST endpoint to perfectly align closed candles.
@@ -190,9 +240,18 @@ export async function pullAuthoritativeKlines(interval: string, limit = 200): Pr
 
   const pullPromise = (async () => {
     try {
-      const res = await fetch(`/api/klines/${encodeURIComponent(interval)}?limit=${limit}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const authoritative = (await res.json()) as Kline[];
+      let authoritative: Kline[] = [];
+      try {
+        const res = await fetch(`/api/klines/${encodeURIComponent(interval)}?limit=${limit}`);
+        if (res.ok) {
+          authoritative = (await res.json()) as Kline[];
+        }
+      } catch {
+        // Fallback
+      }
+      if (!authoritative || authoritative.length === 0) {
+        authoritative = await fetchFromBinanceDirect(interval, limit);
+      }
       if (Array.isArray(authoritative) && authoritative.length > 0) {
         return reconcileHistory(interval, authoritative);
       }
@@ -230,11 +289,20 @@ export async function loadOlderHistory(interval: string): Promise<number> {
   b.loading = true;
   try {
     const endTime = b.bars[0]!.time * 1000 - 1;
-    const res = await fetch(
-      `/api/klines/${encodeURIComponent(interval)}?endTime=${endTime}&limit=1000`,
-    );
-    if (!res.ok) return 0;
-    const older = (await res.json()) as Kline[];
+    let older: Kline[] = [];
+    try {
+      const res = await fetch(
+        `/api/klines/${encodeURIComponent(interval)}?endTime=${endTime}&limit=1000`,
+      );
+      if (res.ok) {
+        older = (await res.json()) as Kline[];
+      }
+    } catch {
+      // Fallback
+    }
+    if (older.length === 0) {
+      older = await fetchFromBinanceDirect(interval, 1000, endTime);
+    }
     const first = b.bars[0]!.time;
     const cut = older.filter((bar) => bar.time < first);
     if (cut.length === 0) {

@@ -1,10 +1,21 @@
+const isGithubActions = Boolean(process.env.GITHUB_ACTIONS);
+let repoName = "";
+if (isGithubActions && process.env.GITHUB_REPOSITORY) {
+  repoName = process.env.GITHUB_REPOSITORY.split("/")[1] || "";
+}
+const isUserOrOrgPage = repoName.toLowerCase().endsWith(".github.io");
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? (repoName && !isUserOrOrgPage ? `/${repoName}` : "");
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Pure static export — no Node server needed at runtime, just static HTML.
-  // Express serves the exported files; the Socket.IO data is what makes it
-  // come alive in the browser.
+  // Pure static export for GitHub Pages / static hosting or Docker
   output: "export",
-  // Don't fail the build on lint during docker build.
+  basePath: basePath || undefined,
+  assetPrefix: basePath || undefined,
+  trailingSlash: true,
+  images: {
+    unoptimized: true,
+  },
   eslint: { ignoreDuringBuilds: true },
 };
 

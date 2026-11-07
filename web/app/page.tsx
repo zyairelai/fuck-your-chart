@@ -5,8 +5,29 @@ import type { ITimeScaleApi, Time } from "lightweight-charts";
 import Chart from "../components/Chart";
 import TopBar from "../components/TopBar";
 import type { TzOffset, Zones, LineToggles, CustomLevel, LinkedCrosshairId, LinkedCrosshairSync } from "../components/Chart";
+import { fetchZones } from "../lib/zones";
 
 const ALL_EMAS = [10, 20, 50, 200];
+const STORAGE_KEY_CUSTOM_LEVELS = "fuck-your-chart:custom-levels:v1";
+
+function getLocalCustomLevels(): CustomLevel[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY_CUSTOM_LEVELS);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function setLocalCustomLevels(levels: CustomLevel[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(STORAGE_KEY_CUSTOM_LEVELS, JSON.stringify(levels));
+  } catch {}
+}
 
 const DEFAULT_TOGGLES: LineToggles = {
   weekly: true,
@@ -59,17 +80,32 @@ export default function Page() {
   }, []);
 
   const customLevelsRequest = useCallback(async (method: "GET" | "POST" | "DELETE", body?: CustomLevel) => {
-    const res = await fetch("/api/custom-levels", {
-      method,
-      headers: body ? { "Content-Type": "application/json" } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    if (!res.ok) {
-      const result = (await res.json().catch(() => null)) as { error?: string } | null;
-      throw new Error(result?.error ?? `Custom levels request failed (${res.status})`);
+    try {
+      const res = await fetch("/api/custom-levels", {
+        method,
+        headers: body ? { "Content-Type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (res.ok) {
+        const result = (await res.json()) as { customLevels: CustomLevel[] };
+        setCustomLevels(result.customLevels);
+        setLocalCustomLevels(result.customLevels);
+        setCustomLevelsError(null);
+        return;
+      }
+    } catch {
+      // Fallback to localStorage (e.g. static hosting on GitHub Pages)
     }
-    const result = (await res.json()) as { customLevels: CustomLevel[] };
-    setCustomLevels(result.customLevels);
+
+    let current = getLocalCustomLevels();
+    if (method === "POST" && body) {
+      const roundedPrice = Math.round(body.price * 2) / 2;
+      current = [...current, { price: roundedPrice, color: body.color }];
+    } else if (method === "DELETE") {
+      current = [];
+    }
+    setLocalCustomLevels(current);
+    setCustomLevels(current);
     setCustomLevelsError(null);
   }, []);
 
@@ -78,16 +114,24 @@ export default function Page() {
       const res = await fetch(`/api/custom-levels?price=${encodeURIComponent(price)}`, {
         method: "DELETE",
       });
-      if (!res.ok) {
-        const result = (await res.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(result?.error ?? `Failed to delete custom level (${res.status})`);
+      if (res.ok) {
+        const result = (await res.json()) as { customLevels: CustomLevel[] };
+        setCustomLevels(result.customLevels);
+        setLocalCustomLevels(result.customLevels);
+        setCustomLevelsError(null);
+        return;
       }
-      const result = (await res.json()) as { customLevels: CustomLevel[] };
-      setCustomLevels(result.customLevels);
-      setCustomLevelsError(null);
-    } catch (err) {
-      setCustomLevelsError(err instanceof Error ? err.message : "Could not delete custom level");
+    } catch {
+      // Fallback to localStorage
     }
+
+    const roundedTarget = Math.round(price * 2) / 2;
+    const current = getLocalCustomLevels().filter(
+      (l) => Math.abs(Math.round(l.price * 2) / 2 - roundedTarget) >= 0.01,
+    );
+    setLocalCustomLevels(current);
+    setCustomLevels(current);
+    setCustomLevelsError(null);
   }, []);
 
   useEffect(() => {
@@ -99,14 +143,8 @@ export default function Page() {
   }, [customLevelsRequest]);
 
   const onDateChange = useCallback(async (date: string) => {
-    try {
-      const res = await fetch(`/api/zones/${encodeURIComponent(date)}`);
-      if (!res.ok) { setZones(null); return; }
-      const data = (await res.json()) as Zones;
-      setZones(data);
-    } catch {
-      setZones(null);
-    }
+    const data = await fetchZones(date);
+    setZones(data);
   }, []);
 
   const onToggle = useCallback((key: keyof LineToggles) => {
