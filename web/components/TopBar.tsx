@@ -54,7 +54,26 @@ export const TIMEFRAMES = [
   { label: "1D", value: "1d" },
 ] as const;
 
+export const SYMBOL_OPTIONS = [
+  { label: "Binance BTCUSDT", value: "BTCUSDT" },
+  { label: "Binance ETHUSDT", value: "ETHUSDT" },
+  { label: "Binance SOLUSDT", value: "SOLUSDT" },
+  { label: "Binance HYPEUSDT", value: "HYPEUSDT" },
+  { label: "Binance XAUUSDT", value: "XAUUSDT" },
+] as const;
+
+export type SymbolOption = (typeof SYMBOL_OPTIONS)[number]["value"];
+
+function roundPriceForSymbol(n: number, sym?: string): number {
+  const s = (sym ?? "BTCUSDT").toUpperCase();
+  if (s.includes("HYPE")) return Math.round(n * 1000) / 1000;
+  if (s.includes("BTC")) return Math.round(n * 2) / 2;
+  return Math.round(n * 100) / 100;
+}
+
 interface Props {
+  symbol?: string;
+  onSymbolChange?: (symbol: string) => void;
   /** Calendar date is the reference day for drawing levels — not the chart window. */
   onDateChange: (date: string) => void;
   toggles: LineToggles;
@@ -68,6 +87,8 @@ interface Props {
 }
 
 export default function TopBar({
+  symbol = "BTCUSDT",
+  onSymbolChange,
   onDateChange,
   toggles,
   onToggle,
@@ -84,9 +105,21 @@ export default function TopBar({
   const [calMonth, setCalMonth] = useState(() => new Date().getMonth());
   const boxRef = useRef<HTMLDivElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
+  const symbolDropdownRef = useRef<HTMLDetailsElement>(null);
   const [customInput, setCustomInput] = useState("");
   const [customColor, setCustomColor] = useState<CustomLevelColor>("yellow");
   const [customActionError, setCustomActionError] = useState<string | null>(null);
+
+  // Close symbol dropdown on click outside
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (symbolDropdownRef.current && !symbolDropdownRef.current.contains(e.target as Node)) {
+        symbolDropdownRef.current.open = false;
+      }
+    };
+    document.addEventListener("click", handler);
+    return () => document.removeEventListener("click", handler);
+  }, []);
 
   // Notify parent on mount and whenever date changes.
   useEffect(() => { onDateChange(date); }, [date, onDateChange]);
@@ -185,8 +218,40 @@ export default function TopBar({
   const prevDate = stepDay(date, -1);
   const nextDate = stepDay(date, +1);
 
+  const currentSymbolOption =
+    SYMBOL_OPTIONS.find((opt) => opt.value === symbol) ?? {
+      label: `Binance ${symbol}`,
+      value: symbol,
+    };
+
   return (
     <header className="top-bar">
+      {/* Symbol dropdown: | Binance BTCUSDT | */}
+      <details className="symbol-dropdown" ref={symbolDropdownRef}>
+        <summary className="symbol-box-wrapper" title="Select trading pair">
+          <span className="symbol-display-text">{currentSymbolOption.label}</span>
+        </summary>
+        <div className="symbol-menu">
+          {SYMBOL_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              className={`symbol-option${opt.value === symbol ? " active" : ""}`}
+              onClick={() => {
+                onSymbolChange?.(opt.value);
+                if (symbolDropdownRef.current) {
+                  symbolDropdownRef.current.open = false;
+                }
+              }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </details>
+
+      <div className="header-divider" />
+
       {/* Date stepper: < DATE > */}
       <div className="date-controls">
         <div className="date-stepper-container">
@@ -260,7 +325,7 @@ export default function TopBar({
         })}
       </div>
 
-      <div className="header-divider" />
+      <div className="top-bar-spacer" />
 
       <div className="level-toggles-group">
         <button
@@ -305,7 +370,7 @@ export default function TopBar({
         </button>
       </div>
 
-      <div className="top-bar-spacer" />
+      <div className="header-divider" />
 
       <form
         className="custom-level-group"
@@ -323,7 +388,7 @@ export default function TopBar({
             return;
           }
           setCustomActionError(null);
-          void onAddCustom(Math.round(n * 2) / 2, customColor).catch((err: unknown) => {
+          void onAddCustom(roundPriceForSymbol(n, symbol), customColor).catch((err: unknown) => {
             setCustomActionError(err instanceof Error ? err.message : "Could not add custom level");
           });
           setCustomInput("");

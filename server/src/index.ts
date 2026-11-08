@@ -96,9 +96,10 @@ app.get("/api/klines/:interval", async (req, res) => {
       res.status(400).json({ error: "unsupported interval" });
       return;
     }
+    const symbol = String(req.query.symbol || SYMBOL).toLowerCase();
     const endTime = req.query.endTime != null ? Number(req.query.endTime) : undefined;
     const limit = Math.min(Number(req.query.limit) || 1000, 1000);
-    const bars = await klinesFutures(SYMBOL, interval, limit, endTime);
+    const bars = await klinesFutures(symbol, interval, limit, endTime);
     res.json(bars);
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -131,13 +132,14 @@ app.get("/api/zones/:date", async (req, res) => {
       res.status(400).json({ error: "date must be YYYY-MM-DD" });
       return;
     }
+    const symbol = String(req.query.symbol || SYMBOL).toLowerCase();
     const todayOpenMs = Date.UTC(y, m - 1, d, 0, 0, 0, 0);
     const todayOpenSec = Math.floor(todayOpenMs / 1000);
     const endMs = Date.UTC(y, m - 1, d, 23, 59, 59, 999);
 
     const [daily, weekly] = await Promise.all([
-      klinesFutures(SYMBOL, "1d", 20, endMs),
-      klinesFutures(SYMBOL, "1w", 8, endMs),
+      klinesFutures(symbol, "1d", 20, endMs),
+      klinesFutures(symbol, "1w", 8, endMs),
     ]);
 
     const refDow = new Date(todayOpenMs).getUTCDay(); // 0=Sun, 1=Mon, 5=Fri

@@ -157,8 +157,14 @@ function futureBarCount(interval: string): number {
 }
 
 /** Snap level prices to 0.0 / 0.5 / 1.0 (0.45 → 0.5). */
-function roundHalf(n: number): number {
-  return Math.round(n * 2) / 2;
+function roundPrice(n: number, symbol = "BTCUSDT"): number {
+  if (symbol.toUpperCase() === "BTCUSDT") {
+    return Math.round(n * 2) / 2;
+  }
+  if (symbol.toUpperCase() === "HYPEUSDT") {
+    return Math.round(n * 1000) / 1000;
+  }
+  return Math.round(n * 100) / 100;
 }
 
 function formatCountdown(interval: string, barTime: number): string {
@@ -229,7 +235,7 @@ function fmtCrosshairTime(t: Time, tz: TzOffset): string {
   return `${dow} ${day} ${mon} '${yr} ${fmtTime(epoch, tz)}`;
 }
 
-function makeLocalization(tz: TzOffset) {
+function makeLocalization(tz: TzOffset, symbol = "BTCUSDT") {
   let lastEpoch: number | null = null;
   let lastFormattedTime = "";
   return {
@@ -241,26 +247,52 @@ function makeLocalization(tz: TzOffset) {
       }
       return lastFormattedTime;
     },
-    priceFormatter: formatPrice,
+    priceFormatter: (p: number) => formatPrice(p, symbol),
   };
 }
 
-function formatPrice(price: number): string {
-  return String(Math.round(price));
+function getPricePrecision(symbol: string): number {
+  switch (symbol.toUpperCase()) {
+    case "BTCUSDT":
+      return 0;
+    case "HYPEUSDT":
+      return 3;
+    case "ETHUSDT":
+    case "SOLUSDT":
+    case "XAUUSDT":
+    default:
+      return 2;
+  }
 }
 
-const PRICE_FORMAT = {
-  type: "custom" as const,
-  minMove: 1,
-  formatter: formatPrice,
-};
+function getMinMove(symbol: string): number {
+  switch (symbol.toUpperCase()) {
+    case "BTCUSDT":
+      return 1;
+    case "HYPEUSDT":
+      return 0.001;
+    case "ETHUSDT":
+    case "SOLUSDT":
+    case "XAUUSDT":
+    default:
+      return 0.01;
+  }
+}
 
-function setTabTitle(price: number) {
+function formatPrice(price: number, symbol = "BTCUSDT"): string {
+  const precision = getPricePrecision(symbol);
+  if (precision === 0) return String(Math.round(price));
+  return price.toFixed(precision);
+}
+
+function setTabTitle(price: number, symbol = "BTCUSDT") {
+  const precision = getPricePrecision(symbol);
   const s = price.toLocaleString("en-US", {
-    minimumFractionDigits: 1,
-    maximumFractionDigits: 1,
+    minimumFractionDigits: Math.max(1, precision),
+    maximumFractionDigits: Math.max(1, precision),
   });
-  document.title = `$${s} BTC fuck-your-chart`;
+  const cleanName = symbol.replace(/USDT$/i, "");
+  document.title = `$${s} ${cleanName} fuck-your-chart`;
 }
 
 function copyToLegacyClipboard(text: string): boolean {
@@ -343,6 +375,7 @@ const DEFAULT_EMAS: number[] = [10, 20, 50, 200];
 const DEFAULT_EMA_OFF: number[] = [];
 
 interface Props {
+  symbol?: string;
   /** Timeframe string from Binance ("1m", "3m", "5m"). */
   interval: string;
   heikin?: boolean;
@@ -374,6 +407,7 @@ interface Props {
 }
 
 export default function Chart({
+  symbol = "BTCUSDT",
   interval,
   heikin = false,
   emas = DEFAULT_EMAS,
@@ -802,7 +836,7 @@ export default function Chart({
     const lastBar = series[series.length - 1]!;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     futureRef.current?.setData(futureWhitespace(lastBar.time, interval) as any);
-    if (!heikin) setTabTitle(lastBar.close);
+    if (!heikin) setTabTitle(lastBar.close, symbol);
     paintEmas(series);
     paintLatestOhlc();
     updateClosePriceLine();
@@ -817,7 +851,7 @@ export default function Chart({
     try {
       const firstTime = cacheRef.current[0]!.time;
       const endTime = firstTime * 1000 - 1;
-      const older = await fetchOlderKlines(interval, endTime, 1000);
+      const older = await fetchOlderKlines(interval, endTime, 1000, symbol);
       const cut = older.filter((bar) => bar.time < firstTime);
       if (cut.length === 0) {
         exhaustedOlderRef.current = true;
@@ -825,7 +859,7 @@ export default function Chart({
       }
       const raw = cleanAndSort([...cut, ...cacheRef.current]);
       cacheRef.current = raw;
-      seedHistory(interval, raw);
+      seedHistory(interval, raw, symbol);
 
       let series: Kline[];
       if (heikin) {
@@ -876,7 +910,7 @@ export default function Chart({
     if (raw.length === 0) {
       const clean = cleanAndSort(latestBars);
       cacheRef.current = clean;
-      seedHistory(interval, clean);
+      seedHistory(interval, clean, symbol);
       return;
     }
 
@@ -886,7 +920,7 @@ export default function Chart({
     for (const b of latestBars) barMap.set(b.time, b);
     const merged = cleanAndSort([...barMap.values()]);
     cacheRef.current = merged;
-    seedHistory(interval, merged);
+    seedHistory(interval, merged, symbol);
 
     const newLastTime = merged[merged.length - 1]!.time;
     const isNewBar = newLastTime > prevLastTime;
@@ -927,7 +961,7 @@ export default function Chart({
         const lastBar = series[series.length - 1]!;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         futureRef.current?.setData(futureWhitespace(lastBar.time, interval) as any);
-        if (!heikin) setTabTitle(lastBar.close);
+        if (!heikin) setTabTitle(lastBar.close, symbol);
       }
       paintLatestOhlc();
       updateClosePriceLine();
@@ -1021,7 +1055,7 @@ export default function Chart({
         vertLine: { color: "#8b8f98", width: 1, style: LineStyle.Dashed, labelBackgroundColor: "#333842" },
         horzLine: { color: "#8b8f98", width: 1, style: LineStyle.Dashed, labelBackgroundColor: "#333842" },
       },
-      localization: makeLocalization(tz),
+      localization: makeLocalization(tz, symbol),
       rightPriceScale: {
         borderColor: "#2a2e39",
         autoScale: true,
@@ -1058,6 +1092,12 @@ export default function Chart({
     chartRef.current = chart;
     setChartReady(true);
 
+    const symbolPriceFormat = {
+      type: "custom" as const,
+      minMove: getMinMove(symbol),
+      formatter: (p: number) => formatPrice(p, symbol),
+    };
+
     // Default right price scale (used by every series on this chart).
     const right = chart.priceScale("right");
     rightScaleRef.current = right;
@@ -1074,7 +1114,7 @@ export default function Chart({
         pointMarkersVisible: false,
         priceLineVisible: false,
         lastValueVisible: false,
-        priceFormat: PRICE_FORMAT,
+        priceFormat: symbolPriceFormat,
         crosshairMarkerVisible: false,
       });
     };
@@ -1093,7 +1133,7 @@ export default function Chart({
       borderDownColor: "#e23442",
       priceLineVisible: false,
       lastValueVisible: false,
-      priceFormat: PRICE_FORMAT,
+      priceFormat: symbolPriceFormat,
     });
     candleRef.current = candle;
 
@@ -1106,7 +1146,7 @@ export default function Chart({
       priceLineVisible: false,
       crosshairMarkerVisible: false,
       pointMarkersVisible: false,
-      priceFormat: PRICE_FORMAT,
+      priceFormat: symbolPriceFormat,
     });
     futureRef.current = futureLine;
 
@@ -1138,7 +1178,7 @@ export default function Chart({
       const lastBar = series[series.length - 1]!;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       futureRef.current?.setData(futureWhitespace(lastBar.time, interval) as any);
-      if (!heikin) setTabTitle(lastBar.close);
+      if (!heikin) setTabTitle(lastBar.close, symbol);
       recomputeEmas(savedBars);
       paintLatestOhlc();
       updateClosePriceLine();
@@ -1325,7 +1365,7 @@ export default function Chart({
         let closestCustomLevel: CustomLevel | null = null;
         let minCustomDiff = Infinity;
         for (const level of levels) {
-          const lineY = series.priceToCoordinate(roundHalf(level.price));
+          const lineY = series.priceToCoordinate(roundPrice(level.price, symbol));
           if (lineY == null) continue;
           const diff = Math.abs(lineY - y);
           if (diff < minCustomDiff) {
@@ -1439,9 +1479,9 @@ export default function Chart({
     if (!chartRef.current) return;
     chartRef.current.applyOptions({
       timeScale: { tickMarkFormatter: makeTickFormatter(tz) },
-      localization: makeLocalization(tz),
+      localization: makeLocalization(tz, symbol),
     });
-  }, [tz]);
+  }, [tz, symbol]);
 
   // Horizontal levels from zones.py — calendar date is the reference day only.
   // Purple thick = Prev 1W H/L. Blue thick = this week's Monday H/L.
@@ -1463,7 +1503,7 @@ export default function Chart({
       style: LineStyle,
       title: string,
     ) => {
-      const roundedPrice = roundHalf(price);
+      const roundedPrice = roundPrice(price, symbol);
       const line = series.createPriceLine({
         price: roundedPrice,
         color,
@@ -1504,7 +1544,7 @@ export default function Chart({
     for (let i = 0; i < customLevels.length; i++) {
       const level = customLevels[i]!;
       const color = CUSTOM_LEVEL_COLORS[level.color] ?? "#f8ea3b";
-      const roundedPrice = roundHalf(level.price);
+      const roundedPrice = roundPrice(level.price, symbol);
       const line = series.createPriceLine({
         price: roundedPrice,
         color,
@@ -1526,12 +1566,12 @@ export default function Chart({
     const loadInitial = async () => {
       try {
         setStatus("connecting");
-        const snapshot = await fetchLatestKlines(interval, 500);
+        const snapshot = await fetchLatestKlines(interval, 500, symbol);
         if (cancelled || !candleRef.current || snapshot.length === 0) return;
 
         const clean = cleanAndSort(snapshot);
         cacheRef.current = clean;
-        seedHistory(interval, clean);
+        seedHistory(interval, clean, symbol);
 
         let series: Kline[];
         if (heikin) {
@@ -1564,7 +1604,7 @@ export default function Chart({
           const lastBar = series[series.length - 1]!;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           futureRef.current?.setData(futureWhitespace(lastBar.time, interval) as any);
-          if (!heikin) setTabTitle(lastBar.close);
+          if (!heikin) setTabTitle(lastBar.close, symbol);
         }
 
         recomputeEmas(clean);
@@ -1587,7 +1627,7 @@ export default function Chart({
     const pollLatest = async () => {
       if (cancelled || !candleRef.current) return;
       try {
-        const latest = await fetchLatestKlines(interval, 20);
+        const latest = await fetchLatestKlines(interval, 20, symbol);
         if (cancelled || !candleRef.current || latest.length === 0) return;
         updateWithLatestBars(latest);
         setStatus("live");
@@ -1629,7 +1669,7 @@ export default function Chart({
       if (pollTimer !== null) clearTimeout(pollTimer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [interval, heikin]);
+  }, [interval, heikin, symbol]);
 
   const fmt = (n: number | null) =>
     n == null ? "—" : n.toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -1684,7 +1724,7 @@ export default function Chart({
       {/* Header — timeframe + level + EMA + foot + OHLC. */}
       <div className="cell-header">
         <span className="symbol">
-          BTCUSDT · {formatTfLabel(interval)} · Binance{heikin ? " · Heikin Ashi" : ""}
+          {symbol} · {formatTfLabel(interval)} · Binance{heikin ? " · Heikin Ashi" : ""}
         </span>
         <button
           type="button"

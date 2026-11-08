@@ -38,6 +38,8 @@ const DEFAULT_TOGGLES: LineToggles = {
 };
 
 export default function Page() {
+  const [symbol, setSymbol] = useState("BTCUSDT");
+  const [selectedDate, setSelectedDate] = useState<string>("");
   const [selectedTimeframe, setSelectedTimeframe] = useState<string | null>(null);
 
   const linkedTimeScales = useRef<ITimeScaleApi<Time>[]>([]);
@@ -142,10 +144,18 @@ export default function Page() {
       .finally(() => setCustomLevelsReady(true));
   }, [customLevelsRequest]);
 
+  const handleSymbolChange = useCallback((newSymbol: string) => {
+    setSymbol(newSymbol);
+    if (selectedDate) {
+      void fetchZones(selectedDate, newSymbol).then(setZones);
+    }
+  }, [selectedDate]);
+
   const onDateChange = useCallback(async (date: string) => {
-    const data = await fetchZones(date);
+    setSelectedDate(date);
+    const data = await fetchZones(date, symbol);
     setZones(data);
-  }, []);
+  }, [symbol]);
 
   const onToggle = useCallback((key: keyof LineToggles) => {
     setToggles((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -158,6 +168,8 @@ export default function Page() {
   return (
     <>
       <TopBar
+        symbol={symbol}
+        onSymbolChange={handleSymbolChange}
         onDateChange={onDateChange}
         toggles={toggles}
         onToggle={onToggle}
@@ -171,7 +183,8 @@ export default function Page() {
       <main className={`page${switchedLayout ? " switched" : ""}`}>
         <div className="cell chart-main">
           <Chart
-            key={`raw-${rawInterval}`}
+            key={`raw-${symbol}-${rawInterval}`}
+            symbol={symbol}
             interval={rawInterval}
             emas={ALL_EMAS}
             allowFootprint={true}
@@ -192,7 +205,8 @@ export default function Page() {
         </div>
         <div className="cell chart-ha-top">
           <Chart
-            key={`ha-top-${topHaInterval}`}
+            key={`ha-top-${symbol}-${topHaInterval}`}
+            symbol={symbol}
             interval={topHaInterval}
             heikin
             emas={ALL_EMAS}
@@ -214,7 +228,8 @@ export default function Page() {
         </div>
         <div className="cell chart-ha-bottom">
           <Chart
-            key="ha-bottom-3m"
+            key={`ha-bottom-${symbol}-3m`}
+            symbol={symbol}
             interval="3m"
             heikin
             emas={ALL_EMAS}

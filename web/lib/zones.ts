@@ -21,9 +21,9 @@ function barAt(bars: { time: number; high: number; low: number }[], openSec: num
  * Tries the local backend API first; if unavailable (e.g. on GitHub Pages),
  * computes them directly from Binance Futures 1d/1w candles.
  */
-export async function fetchZones(dateStr: string): Promise<Zones | null> {
+export async function fetchZones(dateStr: string, symbol = "BTCUSDT"): Promise<Zones | null> {
   try {
-    const res = await fetch(`/api/zones/${encodeURIComponent(dateStr)}`);
+    const res = await fetch(`/api/zones/${encodeURIComponent(dateStr)}?symbol=${encodeURIComponent(symbol)}`);
     if (res.ok) {
       return (await res.json()) as Zones;
     }
@@ -39,8 +39,8 @@ export async function fetchZones(dateStr: string): Promise<Zones | null> {
     const endMs = Date.UTC(y, m - 1, d, 23, 59, 59, 999);
 
     const [daily, weekly] = await Promise.all([
-      fetchFromBinanceDirect("1d", 20, endMs),
-      fetchFromBinanceDirect("1w", 8, endMs),
+      fetchFromBinanceDirect("1d", 20, endMs, symbol),
+      fetchFromBinanceDirect("1w", 8, endMs, symbol),
     ]);
 
     const refDow = new Date(todayOpenMs).getUTCDay(); // 0=Sun, 1=Mon, 5=Fri

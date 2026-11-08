@@ -616,6 +616,85 @@ html, body {
 .status .dot { width: 6px; height: 6px; border-radius: 50%; background: #08907a; }
 .status .dot.off { background: #e23442; }
 
+/* ── TopBar symbol dropdown ────────────────────────────────────────────── */
+.symbol-dropdown {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.symbol-dropdown summary {
+  list-style: none;
+}
+.symbol-dropdown summary::-webkit-details-marker {
+  display: none;
+}
+.symbol-box-wrapper {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #1e222d;
+  border: 1px solid #2962ff;
+  padding: 0 10px;
+  height: 26px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: border-color 0.2s, background-color 0.2s;
+  user-select: none;
+  white-space: nowrap;
+}
+.symbol-box-wrapper:hover {
+  background-color: #252a37;
+}
+.symbol-display-text {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: -0.2px;
+}
+.symbol-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: max-content;
+  min-width: 100%;
+  background-color: #1e222d;
+  border: 1px solid #2a2e39;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  padding: 4px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.symbol-option {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #d1d4dc;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+.symbol-option:hover {
+  background-color: #2a2e39;
+  color: #ffffff;
+}
+.symbol-option.active {
+  background-color: rgba(41, 98, 255, 0.2);
+  color: #2962ff;
+  font-weight: 700;
+}
+
 /* ── TopBar date stepper + calendar (ported from bitcoin-history) ────────── */
 .date-controls {
   display: flex;

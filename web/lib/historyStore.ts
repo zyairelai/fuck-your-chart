@@ -51,8 +51,13 @@ export function cleanAndSort(bars: Kline[]): Kline[] {
   return [...map.values()].sort((a, z) => a.time - z.time);
 }
 
-function bucket(interval: string): Bucket {
-  let b = buckets.get(interval);
+function makeBucketKey(interval: string, symbol = "BTCUSDT"): string {
+  return `${symbol.toUpperCase()}:${interval}`;
+}
+
+function bucket(interval: string, symbol = "BTCUSDT"): Bucket {
+  const key = makeBucketKey(interval, symbol);
+  let b = buckets.get(key);
   if (!b) {
     b = {
       bars: [],
@@ -61,65 +66,66 @@ function bucket(interval: string): Bucket {
       exhausted: false,
       hydrated: false,
     };
-    buckets.set(interval, b);
+    buckets.set(key, b);
   }
   if (!b.hydrated && typeof window !== "undefined") {
     b.hydrated = true;
     try {
-      const saved = window.localStorage.getItem(`${STORAGE_PREFIX}${interval}`);
+      const saved = window.localStorage.getItem(`${STORAGE_PREFIX}${key}`);
       if (saved) {
         const parsed: unknown = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.every(isKline)) {
           b.bars = cleanAndSort(parsed);
         } else {
-          console.warn(`[history] ignoring invalid saved ${interval} candles`);
+          console.warn(`[history] ignoring invalid saved ${key} candles`);
         }
       }
     } catch (err) {
-      console.warn(`[history] could not restore saved ${interval} candles:`, err);
+      console.warn(`[history] could not restore saved ${key} candles:`, err);
     }
   }
   return b;
 }
 
-function persist(interval: string, bars: Kline[]) {
+function persist(interval: string, bars: Kline[], symbol = "BTCUSDT") {
   if (typeof window === "undefined") return;
+  const key = makeBucketKey(interval, symbol);
   try {
     window.localStorage.setItem(
-      `${STORAGE_PREFIX}${interval}`,
+      `${STORAGE_PREFIX}${key}`,
       JSON.stringify(bars.slice(-PERSISTED_BAR_LIMIT)),
     );
   } catch (err) {
-    console.warn(`[history] could not save ${interval} candles:`, err);
+    console.warn(`[history] could not save ${key} candles:`, err);
   }
 }
 
-function notify(interval: string, ev: HistoryEvent) {
-  for (const fn of bucket(interval).listeners) fn(ev);
+function notify(interval: string, ev: HistoryEvent, symbol = "BTCUSDT") {
+  for (const fn of bucket(interval, symbol).listeners) fn(ev);
 }
 
-export function subscribeHistory(interval: string, fn: Listener): () => void {
-  const b = bucket(interval);
+export function subscribeHistory(interval: string, fn: Listener, symbol = "BTCUSDT"): () => void {
+  const b = bucket(interval, symbol);
   b.listeners.add(fn);
   return () => { b.listeners.delete(fn); };
 }
 
-export function getHistory(interval: string): Kline[] {
-  return bucket(interval).bars;
+export function getHistory(interval: string, symbol = "BTCUSDT"): Kline[] {
+  return bucket(interval, symbol).bars;
 }
 
-export function seedHistory(interval: string, bars: Kline[]) {
-  const b = bucket(interval);
+export function seedHistory(interval: string, bars: Kline[], symbol = "BTCUSDT") {
+  const b = bucket(interval, symbol);
   const map = new Map<number, Kline>();
   for (const bar of b.bars) map.set(bar.time, bar);
   for (const bar of bars) map.set(bar.time, bar);
   b.bars = cleanAndSort([...map.values()]);
   b.exhausted = false;
-  persist(interval, b.bars);
+  persist(interval, b.bars, symbol);
 }
 
-export function reconcileHistory(interval: string, authoritative: Kline[]): Kline[] {
-  const b = bucket(interval);
+export function reconcileHistory(interval: string, authoritative: Kline[], symbol = "BTCUSDT"): Kline[] {
+  const b = bucket(interval, symbol);
   if (!authoritative || authoritative.length === 0) return b.bars;
 
   const map = new Map<number, Kline>();
@@ -140,14 +146,13 @@ export function reconcileHistory(interval: string, authoritative: Kline[]): Klin
   }
 
   b.bars = cleanAndSort([...map.values()]);
-  persist(interval, b.bars);
+  persist(interval, b.bars, symbol);
   return b.bars;
 }
 
 const inFlightPulls = new Map<string, Promise<Kline[]>>();
 
 const FAPI_BASE = "https://fapi.binance.com";
-const SYMBOL = "BTCUSDT";
 
 function parseBinanceKline(raw: (string | number)[]): Kline {
   const closeTimeMs = Number(raw[6]);
@@ -169,9 +174,10 @@ export async function fetchFromBinanceDirect(
   interval: string,
   limit = 500,
   endTimeMs?: number,
+  symbol = "BTCUSDT",
 ): Promise<Kline[]> {
   const params = new URLSearchParams({
-    symbol: SYMBOL,
+    symbol: symbol.toUpperCase(),
     interval,
     limit: String(Math.min(Math.max(limit, 1), 1000)),
   });
@@ -185,15 +191,15 @@ export async function fetchFromBinanceDirect(
 }
 
 /** Fetch latest klines from the server REST endpoint, deduplicating concurrent in-flight requests. */
-export async function fetchLatestKlines(interval: string, limit = 20): Promise<Kline[]> {
-  const key = `${interval}:${limit}`;
+export async function fetchLatestKlines(interval: string, limit = 20, symbol = "BTCUSDT"): Promise<Kline[]> {
+  const key = `${symbol.toUpperCase()}:${interval}:${limit}`;
   const existing = inFlightPulls.get(key);
   if (existing) return existing;
 
   const pullPromise = (async () => {
     try {
       try {
-        const res = await fetch(`/api/klines/${encodeURIComponent(interval)}?limit=${limit}`);
+        const res = await fetch(`/api/klines/${encodeURIComponent(interval)}?symbol=${encodeURIComponent(symbol)}&limit=${limit}`);
         if (res.ok) {
           const raw = (await res.json()) as Kline[];
           return raw.map((k) => ({
@@ -204,7 +210,7 @@ export async function fetchLatestKlines(interval: string, limit = 20): Promise<K
       } catch {
         // Fallback to Binance public REST endpoint (e.g. on GitHub Pages)
       }
-      return await fetchFromBinanceDirect(interval, limit);
+      return await fetchFromBinanceDirect(interval, limit, undefined, symbol);
     } finally {
       inFlightPulls.delete(key);
     }
@@ -214,10 +220,10 @@ export async function fetchLatestKlines(interval: string, limit = 20): Promise<K
   return pullPromise;
 }
 
-export async function fetchOlderKlines(interval: string, endTimeMs: number, limit = 1000): Promise<Kline[]> {
+export async function fetchOlderKlines(interval: string, endTimeMs: number, limit = 1000, symbol = "BTCUSDT"): Promise<Kline[]> {
   try {
     const res = await fetch(
-      `/api/klines/${encodeURIComponent(interval)}?endTime=${endTimeMs}&limit=${limit}`,
+      `/api/klines/${encodeURIComponent(interval)}?symbol=${encodeURIComponent(symbol)}&endTime=${endTimeMs}&limit=${limit}`,
     );
     if (res.ok) {
       const older = (await res.json()) as Kline[];
@@ -229,20 +235,20 @@ export async function fetchOlderKlines(interval: string, endTimeMs: number, limi
   } catch {
     // Fallback
   }
-  return fetchFromBinanceDirect(interval, limit, endTimeMs);
+  return fetchFromBinanceDirect(interval, limit, endTimeMs, symbol);
 }
 
 /** Pull official klines from the server REST endpoint to perfectly align closed candles.
  *  Multiple charts (e.g. 1m raw + 1m HA) share the single concurrent HTTP request. */
-export async function pullAuthoritativeKlines(interval: string, limit = 200): Promise<Kline[]> {
-  const existing = inFlightPulls.get(interval);
+export async function pullAuthoritativeKlines(interval: string, limit = 200, symbol = "BTCUSDT"): Promise<Kline[]> {
+  const existing = inFlightPulls.get(`${symbol.toUpperCase()}:${interval}`);
   if (existing) return existing;
 
   const pullPromise = (async () => {
     try {
       let authoritative: Kline[] = [];
       try {
-        const res = await fetch(`/api/klines/${encodeURIComponent(interval)}?limit=${limit}`);
+        const res = await fetch(`/api/klines/${encodeURIComponent(interval)}?symbol=${encodeURIComponent(symbol)}&limit=${limit}`);
         if (res.ok) {
           authoritative = (await res.json()) as Kline[];
         }
@@ -250,26 +256,26 @@ export async function pullAuthoritativeKlines(interval: string, limit = 200): Pr
         // Fallback
       }
       if (!authoritative || authoritative.length === 0) {
-        authoritative = await fetchFromBinanceDirect(interval, limit);
+        authoritative = await fetchFromBinanceDirect(interval, limit, undefined, symbol);
       }
       if (Array.isArray(authoritative) && authoritative.length > 0) {
-        return reconcileHistory(interval, authoritative);
+        return reconcileHistory(interval, authoritative, symbol);
       }
-      return getHistory(interval);
+      return getHistory(interval, symbol);
     } catch (err) {
-      console.warn(`[history] failed to pull authoritative klines for ${interval}:`, err);
-      return getHistory(interval);
+      console.warn(`[history] failed to pull authoritative klines for ${symbol}:${interval}:`, err);
+      return getHistory(interval, symbol);
     } finally {
-      inFlightPulls.delete(interval);
+      inFlightPulls.delete(`${symbol.toUpperCase()}:${interval}`);
     }
   })();
 
-  inFlightPulls.set(interval, pullPromise);
+  inFlightPulls.set(`${symbol.toUpperCase()}:${interval}`, pullPromise);
   return pullPromise;
 }
 
-export function applyLiveKline(interval: string, k: Kline) {
-  const b = bucket(interval);
+export function applyLiveKline(interval: string, k: Kline, symbol = "BTCUSDT") {
+  const b = bucket(interval, symbol);
   const last = b.bars[b.bars.length - 1];
   if (last && last.time === k.time) {
     b.bars[b.bars.length - 1] = k;
@@ -279,12 +285,12 @@ export function applyLiveKline(interval: string, k: Kline) {
   } else if (!last || k.time > last.time) {
     b.bars.push(k);
   }
-  if (k.closed) persist(interval, b.bars);
+  if (k.closed) persist(interval, b.bars, symbol);
 }
 
 /** Fetch one older page (max 1000) and prepend. Returns how many bars were added. */
-export async function loadOlderHistory(interval: string): Promise<number> {
-  const b = bucket(interval);
+export async function loadOlderHistory(interval: string, symbol = "BTCUSDT"): Promise<number> {
+  const b = bucket(interval, symbol);
   if (b.loading || b.exhausted || b.bars.length === 0) return 0;
   b.loading = true;
   try {
@@ -292,7 +298,7 @@ export async function loadOlderHistory(interval: string): Promise<number> {
     let older: Kline[] = [];
     try {
       const res = await fetch(
-        `/api/klines/${encodeURIComponent(interval)}?endTime=${endTime}&limit=1000`,
+        `/api/klines/${encodeURIComponent(interval)}?symbol=${encodeURIComponent(symbol)}&endTime=${endTime}&limit=1000`,
       );
       if (res.ok) {
         older = (await res.json()) as Kline[];
@@ -301,7 +307,7 @@ export async function loadOlderHistory(interval: string): Promise<number> {
       // Fallback
     }
     if (older.length === 0) {
-      older = await fetchFromBinanceDirect(interval, 1000, endTime);
+      older = await fetchFromBinanceDirect(interval, 1000, endTime, symbol);
     }
     const first = b.bars[0]!.time;
     const cut = older.filter((bar) => bar.time < first);
@@ -310,8 +316,8 @@ export async function loadOlderHistory(interval: string): Promise<number> {
       return 0;
     }
     b.bars = [...cut, ...b.bars];
-    persist(interval, b.bars);
-    notify(interval, { reason: "prepend", prepended: cut.length });
+    persist(interval, b.bars, symbol);
+    notify(interval, { reason: "prepend", prepended: cut.length }, symbol);
     return cut.length;
   } catch {
     return 0;
