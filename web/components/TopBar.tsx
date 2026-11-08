@@ -13,34 +13,34 @@ import { CUSTOM_LEVEL_COLORS, type CustomLevelColor, type LineToggles } from "./
 const CUSTOM_COLORS: Record<CustomLevelColor, string> = CUSTOM_LEVEL_COLORS;
 
 const MONTH_NAMES = [
-  "January","February","March","April","May","June",
-  "July","August","September","October","November","December",
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
 ];
-const DAY_NAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function todayStr(): string {
   const d = new Date();
   const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2,"0");
-  const day = String(d.getDate()).padStart(2,"0");
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
 
 function dayName(dateStr: string): string {
-  const [y,m,d] = dateStr.split("-").map(Number) as [number,number,number];
+  const [y, m, d] = dateStr.split("-").map(Number) as [number, number, number];
   return DAY_NAMES[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]!;
 }
 
 /** Step a YYYY-MM-DD date by +1 or -1 calendar days (no weekend skip — crypto trades every day). */
 function stepDay(dateStr: string, delta: number): string | null {
-  const [y,m,d] = dateStr.split("-").map(Number) as [number,number,number];
+  const [y, m, d] = dateStr.split("-").map(Number) as [number, number, number];
   const dt = new Date(Date.UTC(y, m - 1, d));
   dt.setUTCDate(dt.getUTCDate() + delta);
   const now = new Date();
   if (dt > now) return null; // don't go into the future
   const ry = dt.getUTCFullYear();
-  const rm = String(dt.getUTCMonth() + 1).padStart(2,"0");
-  const rd = String(dt.getUTCDate()).padStart(2,"0");
+  const rm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const rd = String(dt.getUTCDate()).padStart(2, "0");
   return `${ry}-${rm}-${rd}`;
 }
 
@@ -181,7 +181,7 @@ export default function TopBar({
     }
     for (let day = 1; day <= daysInMonth; day++) {
       const dayObj = new Date(Date.UTC(calYear, calMonth, day));
-      const ds = `${calYear}-${String(calMonth + 1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+      const ds = `${calYear}-${String(calMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
       const isFuture = dayObj > today;
       const isSelected = ds === date;
       let cls = "cal-day-cell";
@@ -295,7 +295,7 @@ export default function TopBar({
             <button className="cal-nav-btn" onClick={nextMonth} disabled={isNextDisabled()}>{">"}</button>
           </div>
           <div className="cal-weekdays">
-            {["Su","Mo","Tu","We","Th","Fr","Sa"].map((d) => (
+            {["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map((d) => (
               <span key={d}>{d}</span>
             ))}
           </div>
@@ -330,6 +330,14 @@ export default function TopBar({
       <div className="level-toggles-group">
         <button
           type="button"
+          className={`toggle-btn${toggles.weekend ? " active" : ""}`}
+          title="Previous weekend high / low (blue) and mid (dashed)"
+          onClick={() => onToggle("weekend")}
+        >
+          Weekend
+        </button>
+        <button
+          type="button"
           className={`toggle-btn${toggles.weekly ? " active" : ""}`}
           title="Previous week high / low (purple)"
           onClick={() => onToggle("weekly")}
@@ -359,14 +367,6 @@ export default function TopBar({
           onClick={() => onToggle("fibb")}
         >
           25% / 75%
-        </button>
-        <button
-          type="button"
-          className={`toggle-btn${toggles.weekend ? " active" : ""}`}
-          title="Previous weekend high / low (blue) and mid (dashed)"
-          onClick={() => onToggle("weekend")}
-        >
-          Weekend
         </button>
       </div>
 

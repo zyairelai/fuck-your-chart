@@ -68,7 +68,18 @@ def get_hl_klines(coin, interval, limit=100, startTime=None, endTime=None):
         df = df.iloc[-limit:].reset_index(drop=True)
     return df
 
+def hl_coin_to_binance_symbol(coin):
+    """Convert a Hyperliquid coin (e.g. 'BTC') to a Binance Futures symbol (e.g. 'BTCUSDT')."""
+    coin = coin.upper()
+    if coin.endswith("USDT") or coin.endswith("USDC"):
+        return coin
+    return coin + "USDT"
+
 def get_klines(pair, interval, limit=100, startTime=None, endTime=None, hyper=False):
+    # Hyperliquid does not support 1W candles — always fall back to Binance for weekly data
+    if hyper and interval == "1w":
+        binance_symbol = hl_coin_to_binance_symbol(pair)
+        return get_klines(binance_symbol, interval, limit=limit, startTime=startTime, endTime=endTime, hyper=False)
     if hyper:
         return get_hl_klines(pair, interval, limit=limit, startTime=startTime, endTime=endTime)
     url = "https://fapi.binance.com/fapi/v1/klines"
@@ -504,6 +515,7 @@ def main():
     parser.add_argument('--solusdc', '-solusdc', dest='solusdc', action='store_true')
     parser.add_argument('--xau', '-xau', '--gold', '-gold', dest='xau', action='store_true')
     parser.add_argument('--hyperliquid', '--hyper', '-hyper', '-hyperliquid', dest='hyper', action='store_true')
+    parser.add_argument('--binance', '-binance', dest='binance', action='store_true')
     parser.add_argument('--history', dest='history', action='store_true')
     parser.add_argument('--monday', '-monday', '-mon', '--mon', dest='monday', action='store_true')
     parser.add_argument('--tuesday', '-tuesday', '-tue', '--tue', dest='tuesday', action='store_true')
@@ -570,7 +582,12 @@ def main():
             return
 
     try:
-        hyper = args.hyper
+        if args.binance:
+            hyper = False
+        elif args.hyper:
+            hyper = True
+        else:
+            hyper = False  # default: always Binance BTCUSDT
         tomorrow = args.tomorrow
         if args.all:
             symbols = ['BTC', 'ETH', 'SOL'] if hyper else ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
