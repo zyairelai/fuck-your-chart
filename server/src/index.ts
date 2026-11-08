@@ -1,35 +1,22 @@
 /**
- * Single Express + Socket.IO server.
- *
- * Layout: 1 service in docker-compose exposes port 8000. The Next.js standalone
- * server is reverse-proxied behind the same Express process so only one port
- * is needed. This keeps the whole stack on localhost:8000 as requested.
- *
- * Responsibilities:
- *  - On boot: fetch historical 5m + 3m + 1m candles for BTCUSDT USDT-M perp.
- *  - Open ONE Binance futures WebSocket, fan out kline ticks to every browser.
- *  - Serve the built Next.js static export from /web/out/.
+ * Single Express server for Docker.
+ * Serves the static Next.js export (/web/out) and REST endpoints for
+ * klines, zones, and custom levels. No WebSockets or background loops.
  */
 
 import express from "express";
-import http from "http";
 import path from "path";
 import { fileURLToPath } from "url";
 import cors from "cors";
-import { Server as IOServer } from "socket.io";
 
-import { Kline, klinesFutures, klinesPages, streamKlines, streamLastPrice } from "./binance.js";
+import { klinesFutures } from "./binance.js";
 
 const SYMBOL = "btcusdt";
-// Fixed layout: 5m raw (top-left), 3m HA (bottom-left), 1m raw + HA (right).
-// All three intervals are booted eagerly so every chart is ready immediately.
-const DEFAULT_INTERVALS = ["1m", "3m", "5m", "15m", "1h", "4h", "1d"] as const;
 const ALLOWED_INTERVALS = new Set([
   "1m", "3m", "5m", "15m", "30m",
   "1h", "2h", "4h", "6h", "8h", "12h",
   "1d", "3d", "1w", "1M",
 ]);
-type Interval = string;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,102 +25,18 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const server = http.createServer(app);
-const io = new IOServer(server, {
-  cors: { origin: true, credentials: true },
-});
-
-/**
- * Maintain a per-interval cache of the most recent N candles. New WS ticks
- * either update the open candle (closed=false) or append a new closed candle.
- * This is the only place state lives; clients hold nothing.
- */
-const HISTORY_LIMIT = 50_000;
-const BOOT_PAGES = 10;
-const history = new Map<Interval, Kline[]>();
 const customLevels: { price: number; color: "red" | "yellow" | "green" }[] = [];
 
 function isCustomLevelColor(value: unknown): value is "red" | "yellow" | "green" {
   return value === "red" || value === "yellow" || value === "green";
 }
 
-async function loadHistory() {
-  await Promise.all(DEFAULT_INTERVALS.map((interval) => loadInterval(interval)));
-  io.emit("history", Object.fromEntries(history));
-}
-
-/** Load + cache one interval, and drop the still-open last bar so the client
- *  doesn't paint a "cut off" half-candle. The first websocket tick re-adds
- *  it cleanly via series.update(). */
-async function loadInterval(interval: Interval) {
-  if (!ALLOWED_INTERVALS.has(interval)) {
-    throw new Error(`unsupported interval: ${interval}`);
-  }
-  const bars = await klinesPages(SYMBOL, interval, BOOT_PAGES, 1000);
-  // Keep the still-open last bar so HA can paint it from REST immediately;
-  // websocket ticks then overwrite the same timestamp.
-  history.set(interval, bars);
-  console.log(`[boot] loaded ${bars.length} ${interval} candles for ${SYMBOL}`);
-}
-
-/** Switch the big left chart to a new interval. Loads history if missing,
- *  adds the stream subscription if needed, and broadcasts the new history
- *  to every connected socket. */
-async function ensureInterval(interval: Interval) {
-  if (history.has(interval)) return;
-  if (!ALLOWED_INTERVALS.has(interval)) {
-    throw new Error(`unsupported interval: ${interval}`);
-  }
-  await loadInterval(interval);
-  // Also subscribe the live stream if it's not already streaming this one.
-  liveStream.add(interval);
-  io.emit("history", { [interval]: history.get(interval) });
-}
-
-const liveStream = streamKlines(SYMBOL, [...DEFAULT_INTERVALS], (interval, k) => {
-  const intervalKey = interval as Interval;
-  const bars = history.get(intervalKey);
-  if (!bars) return;
-  const last = bars[bars.length - 1] as { time: number } | undefined;
-  if (!last) {
-    bars.push(k);
-  } else if (last.time === k.time) {
-    // update open candle in place
-    bars[bars.length - 1] = k;
-  } else if (k.time > last.time) {
-    // new bar: append (strictly increasing timestamps)
-    bars.push(k);
-    while (bars.length > HISTORY_LIMIT) bars.shift();
-  } else {
-    // k.time < last.time: older candle update; find and update in-place, never append
-    const idx = bars.findIndex((b) => b.time === k.time);
-    if (idx >= 0) {
-      bars[idx] = k;
-    }
-  }
-  io.emit("kline", { interval, k });
-});
-
-/** Futures last-trade price (aggTrade) — matches CoinGlass BTCUSDT perp. */
-const priceTicker = streamLastPrice(SYMBOL, (price) => {
-  io.volatile.emit("price", price);
-});
-
-io.on("connection", (socket) => {
-  console.log(`[ws] client connected: ${socket.id}`);
-  socket.emit("history", Object.fromEntries(history));
-  socket.on("disconnect", () => console.log(`[ws] client disconnected: ${socket.id}`));
-});
-
-// --- API for debugging (no auth, no keys, no rate limiting, single user) -----
+// --- REST Endpoints ---
 app.get("/api/status", (_req, res) => {
   res.json({
     symbol: SYMBOL,
-    intervals: [...history.keys()],
-    history: Object.fromEntries(
-      [...history.entries()].map(([k, v]) => [k, v.length]),
-    ),
-    clients: io.sockets.sockets.size,
+    status: "ok",
+    customLevelsCount: customLevels.length,
   });
 });
 
@@ -185,18 +88,7 @@ app.delete("/api/custom-levels", (req, res) => {
   res.json({ customLevels });
 });
 
-/** HTTP endpoint to switch interval (kept for compatibility). */
-app.post("/api/interval/:name", async (req, res) => {
-  const name = String(req.params.name);
-  try {
-    await ensureInterval(name);
-    res.json({ interval: name, count: history.get(name)?.length ?? 0 });
-  } catch (err) {
-    res.status(400).json({ error: (err as Error).message });
-  }
-});
-
-/** Paginated older candles for infinite scroll-back. `endTime` is ms. */
+/** Paginated candles for initial load and polling. */
 app.get("/api/klines/:interval", async (req, res) => {
   try {
     const interval = String(req.params.interval);
@@ -215,7 +107,6 @@ app.get("/api/klines/:interval", async (req, res) => {
 
 function fibRange(high: number, low: number) {
   const mid = (high + low) / 2;
-  // Same odd-integer nudge as zones.py so 75%/25% match the CLI.
   let sumHM = high + mid;
   if (Number.isInteger(sumHM) && sumHM % 2 !== 0) sumHM += 1;
   let sumLM = low + mid;
@@ -230,10 +121,7 @@ function barAt(bars: { time: number; high: number; low: number }[], openSec: num
 
 /**
  * GET /api/zones/:date
- *
- * Calendar date is ONLY the reference day for drawing horizontal levels.
- * Day boundaries are UTC 00:00 (Binance 1d/1w candles), not UTC+8.
- * OHLC comes from USDT-M futures — same as zones.py.
+ * Calendar date reference day for drawing horizontal levels.
  */
 app.get("/api/zones/:date", async (req, res) => {
   try {
@@ -282,44 +170,31 @@ app.get("/api/zones/:date", async (req, res) => {
   }
 });
 
-// --- Serve the static Next.js export -----------------------------------------
-// `next build` with `output: "export"` produces `web/out/index.html` plus the
-// JS/CSS chunks under `_next/static/`. Express serves them as plain files.
+// --- Serve the static Next.js export ---
 const webOut = path.resolve(__dirname, "..", "web", "out");
 const webNextStatic = path.join(webOut, "_next");
 
 app.use("/_next", express.static(webNextStatic));
 
-// Static assets (favicon.ico, robots.txt, etc.) served directly first:
+// Static assets (favicon.ico, robots.txt, etc.) served directly:
 app.use(express.static(webOut));
 
-// Fallback: if the user requests a deep path that isn't a real file (e.g.
-// `/some/random/url`), serve the SPA entry so React takes over.
-app.get(/^(?!\/(?:api|socket\.io|_next)\/).*/, (_req, res, next) => {
+// SPA fallback: any other route returns index.html for client-side routing
+app.get(/^(?!\/(?:api|_next)\/).*/, (_req, res, next) => {
   res.sendFile(path.join(webOut, "index.html"), (err) => {
     if (err) next();
   });
 });
 
-// --- Boot order --------------------------------------------------------------
+// --- Boot ---
 const PORT = Number(process.env.PORT ?? 8000);
 
-(async () => {
-  try {
-    await loadHistory();
-  } catch (err) {
-    console.error("[boot] history load failed:", err);
-    process.exit(1);
-  }
-  server.listen(PORT, "0.0.0.0", () => {
-    console.log(`[boot] listening on http://localhost:${PORT}`);
-  });
-})();
+const server = app.listen(PORT, "0.0.0.0", () => {
+  console.log(`[boot] listening on http://localhost:${PORT}`);
+});
 
 const shutdown = () => {
   console.log("[shutdown] closing");
-  liveStream.close();
-  priceTicker.close();
   server.close(() => process.exit(0));
 };
 process.on("SIGINT", shutdown);
