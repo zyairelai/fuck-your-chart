@@ -222,10 +222,11 @@ function fmtTime(t: number, tz: TzOffset): string {
 function fmtCrosshairTime(t: Time, tz: TzOffset): string {
   const epoch = t as number;
   const d = new Date((epoch + tz * 3600) * 1000);
+  const dow = DAY[d.getUTCDay()] ?? "";
   const day = String(d.getUTCDate()).padStart(2, "0");
   const mon = MONTH[d.getUTCMonth()] ?? "";
   const yr = String(d.getUTCFullYear()).slice(-2);
-  return `${day} ${mon} '${yr}  ${fmtTime(epoch, tz)}`;
+  return `${dow} ${day} ${mon} '${yr} ${fmtTime(epoch, tz)}`;
 }
 
 function makeLocalization(tz: TzOffset) {
@@ -1601,9 +1602,10 @@ export default function Chart({
     const scheduleNextPoll = () => {
       if (cancelled) return;
       const now = Date.now();
-      const remainder = now % 5000;
-      // Wait until next 5-second mark (:00, :05, :10, ..., :55) + 50ms buffer
-      const delay = (5000 - remainder) + 50;
+      const intervalMs = 3000;
+      const remainder = now % intervalMs;
+      // Wait until next 3-second mark (:00, :03, :06, ..., :57) + 50ms buffer
+      const delay = (intervalMs - remainder) + 50;
       pollTimer = setTimeout(async () => {
         await pollLatest();
         scheduleNextPoll();
