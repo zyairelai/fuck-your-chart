@@ -48,6 +48,42 @@ const DEFAULT_TOGGLES: LineToggles = {
   weekend: false,
 };
 
+const STORAGE_KEY_TOGGLES = "fuck-your-chart:line-toggles:v1";
+
+function getLocalToggles(): LineToggles | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY_TOGGLES);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as LineToggles;
+    if (
+      typeof parsed.weekly === "boolean" &&
+      typeof parsed.monday === "boolean" &&
+      typeof parsed.pdhlm === "boolean" &&
+      typeof parsed.fibb === "boolean" &&
+      typeof parsed.weekend === "boolean"
+    ) return parsed;
+  } catch {}
+  return null;
+}
+
+function setLocalToggles(t: LineToggles) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(STORAGE_KEY_TOGGLES, JSON.stringify(t));
+  } catch {}
+}
+
+function areTogglesEqual(a: LineToggles, b: LineToggles): boolean {
+  return (
+    a.weekly === b.weekly &&
+    a.monday === b.monday &&
+    a.pdhlm === b.pdhlm &&
+    a.fibb === b.fibb &&
+    a.weekend === b.weekend
+  );
+}
+
 export default function Page() {
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [selectedDate, setSelectedDate] = useState<string>("");
@@ -269,8 +305,67 @@ export default function Page() {
     setZones(data);
   }, [symbol]);
 
+  // Fetch line-toggle settings from backend (or fall back to localStorage)
+  const fetchToggles = useCallback(async () => {
+    try {
+      const res = await fetch("/api/settings");
+      if (res.ok) {
+        const data = (await res.json()) as { lineToggles: LineToggles };
+        const remote = data.lineToggles;
+        setToggles((prev) => (areTogglesEqual(prev, remote) ? prev : remote));
+        setLocalToggles(remote);
+      }
+    } catch {
+      // Backend unavailable (GitHub Pages etc.) — keep local state
+    }
+  }, []);
+
+  // Initial load of toggles + background poll for cross-browser sync
+  useEffect(() => {
+    // Seed from localStorage immediately so there's no flicker before the network round-trip
+    const saved = getLocalToggles();
+    if (saved) setToggles(saved);
+
+    void fetchToggles();
+
+    const pollInterval = setInterval(() => {
+      void fetchToggles();
+    }, 2000);
+
+    const onFocus = () => { void fetchToggles(); };
+    window.addEventListener("focus", onFocus);
+
+    // Cross-tab sync within the same browser
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY_TOGGLES && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue) as LineToggles;
+          if (typeof parsed.weekly === "boolean") {
+            setToggles((prev) => (areTogglesEqual(prev, parsed) ? prev : parsed));
+          }
+        } catch {}
+      }
+    };
+    window.addEventListener("storage", onStorage);
+
+    return () => {
+      clearInterval(pollInterval);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, [fetchToggles]);
+
   const onToggle = useCallback((key: keyof LineToggles) => {
-    setToggles((prev) => ({ ...prev, [key]: !prev[key] }));
+    setToggles((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      setLocalToggles(next);
+      void fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(next),
+      }).catch(() => {});
+      return next;
+    });
   }, []);
 
   const rawInterval = selectedTimeframe ?? "5m";

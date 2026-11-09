@@ -61,6 +61,60 @@ function isCustomLevelColor(value: unknown): value is "red" | "yellow" | "green"
 const customLevels = loadCustomLevels();
 console.log(`[boot] loaded ${customLevels.length} custom level(s) from ${LEVELS_FILE}`);
 
+// --- Persistent line-toggle settings (file-backed) ---
+const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
+
+interface LineToggles {
+  weekly: boolean;
+  monday: boolean;
+  pdhlm: boolean;
+  fibb: boolean;
+  weekend: boolean;
+}
+
+const DEFAULT_LINE_TOGGLES: LineToggles = {
+  weekly: true,
+  monday: false,
+  pdhlm: true,
+  fibb: false,
+  weekend: false,
+};
+
+function isLineToggles(v: unknown): v is LineToggles {
+  if (!v || typeof v !== "object") return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.weekly === "boolean" &&
+    typeof o.monday === "boolean" &&
+    typeof o.pdhlm === "boolean" &&
+    typeof o.fibb === "boolean" &&
+    typeof o.weekend === "boolean"
+  );
+}
+
+function loadSettings(): LineToggles {
+  try {
+    mkdirSync(DATA_DIR, { recursive: true });
+    const raw = readFileSync(SETTINGS_FILE, "utf8");
+    const parsed: unknown = JSON.parse(raw);
+    if (isLineToggles(parsed)) return parsed;
+  } catch {
+    // File missing or corrupt — start fresh
+  }
+  return { ...DEFAULT_LINE_TOGGLES };
+}
+
+function saveSettings(s: LineToggles) {
+  try {
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(SETTINGS_FILE, JSON.stringify(s, null, 2), "utf8");
+  } catch (err) {
+    console.error("[settings] could not save:", err);
+  }
+}
+
+let lineToggles = loadSettings();
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -72,6 +126,22 @@ app.get("/api/status", (_req, res) => {
     status: "ok",
     customLevelsCount: customLevels.length,
   });
+});
+
+// --- Settings (line toggles) ---
+app.get("/api/settings", (_req, res) => {
+  res.json({ lineToggles });
+});
+
+app.put("/api/settings", (req, res) => {
+  const body: unknown = req.body;
+  if (!isLineToggles(body)) {
+    res.status(400).json({ error: "body must be a valid LineToggles object" });
+    return;
+  }
+  lineToggles = { ...body };
+  saveSettings(lineToggles);
+  res.json({ lineToggles });
 });
 
 app.get("/api/custom-levels", (_req, res) => {
