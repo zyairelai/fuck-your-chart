@@ -21,35 +21,17 @@ export function getAudioContext(): AudioContext | null {
   return sharedAudioContext;
 }
 
-/** Quick test beep when user toggles the alert ON — 400ms sharp sine at 1000 Hz. */
+/** Quick test beep when user toggles the alert ON — 350ms sharp square wave at 1000 Hz. */
 export function playTestChirp() {
-  const ctx = getAudioContext();
-  if (!ctx) return;
-  const now = ctx.currentTime;
-
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-
-  osc.type = "square";
-  osc.frequency.setValueAtTime(1000, now);
-
-  // Hard attack, full sustain, short tail
-  gain.gain.setValueAtTime(0, now);
-  gain.gain.linearRampToValueAtTime(0.12, now + 0.005); // snap to full volume in 5ms
-  gain.gain.setValueAtTime(0.12, now + 0.35);
-  gain.gain.linearRampToValueAtTime(0, now + 0.40);
-
-  osc.connect(gain);
-  gain.connect(ctx.destination);
-
-  osc.start(now);
-  osc.stop(now + 0.41);
+  playSharpBeep(0.35);
 }
 
-/**
- * 1.5-second sharp alert when candle closes — exactly the same square-wave tone as toggle-on.
- */
+/** Crisp, sharp alert when candle closes — 400ms sharp square wave at 1000 Hz. */
 export function play5mCloseAlert() {
+  playSharpBeep(0.40);
+}
+
+function playSharpBeep(durationSeconds = 0.40) {
   const ctx = getAudioContext();
   if (!ctx) return;
   const now = ctx.currentTime;
@@ -60,16 +42,16 @@ export function play5mCloseAlert() {
   osc.type = "square";
   osc.frequency.setValueAtTime(1000, now);
 
-  // Hard attack (5ms), full flat sustain, smooth release at 1.50s
+  // Hard attack (5ms), full flat sustain, crisp release (10ms)
   gain.gain.setValueAtTime(0, now);
   gain.gain.linearRampToValueAtTime(0.14, now + 0.005);
-  gain.gain.setValueAtTime(0.14, now + 1.48);
-  gain.gain.linearRampToValueAtTime(0, now + 1.50);
+  gain.gain.setValueAtTime(0.14, now + Math.max(0.01, durationSeconds - 0.01));
+  gain.gain.linearRampToValueAtTime(0, now + durationSeconds);
 
   osc.connect(gain);
   gain.connect(ctx.destination);
 
   osc.start(now);
-  osc.stop(now + 1.51);
+  osc.stop(now + durationSeconds + 0.01);
 }
 

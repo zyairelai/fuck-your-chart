@@ -985,11 +985,6 @@ export default function Chart({
           });
         }
       }
-
-      // Fire beep alert on new bar if enabled
-      if (isNewBar && beepEnabledRef.current) {
-        play5mCloseAlert();
-      }
     }
   };
 
@@ -1683,6 +1678,60 @@ export default function Chart({
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [interval, heikin, symbol]);
+
+  // --- Exact wall-clock timer for candle close beep (:00 turn) ---
+  useEffect(() => {
+    if (!allowBeep || !beepEnabled) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let lastBeepedBar = -1;
+
+    // Interval duration in milliseconds (e.g. 5m = 300,000 ms)
+    const stepMs = Math.max(60000, intervalSeconds(interval) * 1000);
+
+    const scheduleNextBeep = () => {
+      if (cancelled) return;
+      const now = Date.now();
+      const msIntoCurrentBar = now % stepMs;
+      // Exact milliseconds until the candle closes (turns :00)
+      const msUntilClose = stepMs - msIntoCurrentBar;
+
+      timer = setTimeout(() => {
+        if (cancelled) return;
+        const currentNow = Date.now();
+        const barTimestamp = Math.floor(currentNow / stepMs) * stepMs;
+        if (lastBeepedBar !== barTimestamp) {
+          lastBeepedBar = barTimestamp;
+          play5mCloseAlert();
+        }
+        scheduleNextBeep();
+      }, msUntilClose);
+    };
+
+    scheduleNextBeep();
+
+    // High-frequency backup interval (100ms) to guarantee exact :00 turn
+    const backupInterval = setInterval(() => {
+      if (cancelled) return;
+      const now = Date.now();
+      const msIntoCurrentBar = now % stepMs;
+      // In the first 600ms of the new bar (e.g. :00.000 to :00.600)
+      if (msIntoCurrentBar >= 0 && msIntoCurrentBar < 600) {
+        const barTimestamp = Math.floor(now / stepMs) * stepMs;
+        if (lastBeepedBar !== barTimestamp) {
+          lastBeepedBar = barTimestamp;
+          play5mCloseAlert();
+        }
+      }
+    }, 100);
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) clearTimeout(timer);
+      clearInterval(backupInterval);
+    };
+  }, [allowBeep, beepEnabled, interval]);
 
   const fmt = (n: number | null) =>
     n == null ? "—" : n.toLocaleString(undefined, { maximumFractionDigits: 2 });
