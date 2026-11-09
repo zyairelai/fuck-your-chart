@@ -23,6 +23,7 @@ import {
   seedHistory,
   type Kline,
 } from "../lib/historyStore";
+import { play5mCloseAlert, playTestChirp, getAudioContext } from "../lib/audioAlert";
 
 
 interface HoverData {
@@ -386,6 +387,8 @@ interface Props {
   allowFootprint?: boolean;
   /** Whether the footprint pane is visible on first mount. */
   defaultFootprintEnabled?: boolean;
+  /** Whether this chart instance can show the beep-on-close toggle. */
+  allowBeep?: boolean;
   /** Whether the price levels (zones and custom) are visible on first mount. */
   defaultLevelsEnabled?: boolean;
   /** Display timezone offset (hours). Shared global state from page. */
@@ -414,6 +417,7 @@ export default function Chart({
   defaultEmaOff = DEFAULT_EMA_OFF,
   allowFootprint = true,
   defaultFootprintEnabled = false,
+  allowBeep = false,
   defaultLevelsEnabled = true,
   tz = 0,
   zones = null,
@@ -510,6 +514,10 @@ export default function Chart({
   const levelsEnabledRef = useRef(defaultLevelsEnabled);
   levelsEnabledRef.current = levelsEnabled;
   const copyToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Beep-on-close state (only relevant when allowBeep=true)
+  const [beepEnabled, setBeepEnabled] = useState(false);
+  const beepEnabledRef = useRef(false);
 
   /** Right-click context menu state. */
   const customLevelsRef = useRef(customLevels);
@@ -976,6 +984,11 @@ export default function Chart({
             to: range.to + newBarCount,
           });
         }
+      }
+
+      // Fire beep alert on new bar if enabled
+      if (isNewBar && beepEnabledRef.current) {
+        play5mCloseAlert();
       }
     }
   };
@@ -1751,6 +1764,27 @@ export default function Chart({
             }}
           >
             Delta
+          </button>
+        )}
+        {allowBeep && (
+          <button
+            type="button"
+            className={`beep-chip${beepEnabled ? " active" : " off"}`}
+            aria-pressed={beepEnabled}
+            title={beepEnabled ? "Beep on 5m close — ON (click to turn off)" : "Beep on 5m close — OFF (click to turn on)"}
+            onClick={(e) => {
+              e.stopPropagation();
+              const next = !beepEnabledRef.current;
+              beepEnabledRef.current = next;
+              setBeepEnabled(next);
+              // Warm up the AudioContext and play a quick chirp on enable
+              if (next) {
+                getAudioContext();
+                playTestChirp();
+              }
+            }}
+          >
+            🔔
           </button>
         )}
         <div className="ohlc-bar">

@@ -189,6 +189,7 @@ export default function Page() {
             emas={ALL_EMAS}
             allowFootprint={true}
             defaultFootprintEnabled={true}
+            allowBeep={true}
             defaultLevelsEnabled={true}
             tz={tz}
             zones={zones}
@@ -246,6 +247,7 @@ export default function Page() {
         </div>
       </main>
 
+      {/* Global TZ dropdown in bottom-right corner (under price scale) */}
       <div className="global-tz-wrapper">
         <select
           className="global-tz-select"

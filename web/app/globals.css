@@ -1,4 +1,5 @@
-html, body {
+html,
+body {
   margin: 0;
   padding: 0;
   background: #131722;
@@ -8,7 +9,9 @@ html, body {
   overflow: hidden;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
 /* --- App shell --------------------------------------------------------------
  * Matched to the sample's top-bar style. Top bar is fixed height; charts fill
@@ -55,6 +58,7 @@ html, body {
   border-radius: 4px;
   padding: 2px;
 }
+
 .tf-btn {
   appearance: none;
   background: transparent;
@@ -68,18 +72,22 @@ html, body {
   cursor: pointer;
   transition: background 80ms ease, color 80ms ease;
 }
+
 .tf-btn:hover {
   color: #d1d4dc;
   background: rgba(255, 255, 255, 0.04);
 }
+
 .tf-btn.active {
   color: #ffffff;
   background: #2a2e39;
 }
+
 .tf-btn:focus-visible {
   outline: 1px solid #4f8cf7;
   outline-offset: 1px;
 }
+
 .top-bar-spacer {
   flex: 1 1 auto;
 }
@@ -124,6 +132,7 @@ html, body {
   align-items: center;
   gap: 8px;
 }
+
 .toggle-btn {
   background-color: #1e222d;
   border: 1px solid #2a2e39;
@@ -141,11 +150,13 @@ html, body {
   user-select: none;
   transition: background-color 0.15s, border-color 0.15s, color 0.15s;
 }
+
 .toggle-btn:hover {
   background-color: #252a37;
   border-color: rgba(255, 255, 255, 0.2);
   color: #ffffff;
 }
+
 .toggle-btn.active {
   color: #2962ff;
   border-color: #2962ff;
@@ -161,6 +172,7 @@ html, body {
   gap: 6px;
   margin-left: 8px;
 }
+
 .custom-level-error {
   position: absolute;
   top: calc(100% + 6px);
@@ -175,9 +187,11 @@ html, body {
   font-size: 11px;
   white-space: normal;
 }
+
 .custom-color-picker {
   position: relative;
 }
+
 .custom-color-trigger {
   width: 28px;
   height: 28px;
@@ -190,7 +204,11 @@ html, body {
   cursor: pointer;
   list-style: none;
 }
-.custom-color-trigger::-webkit-details-marker { display: none; }
+
+.custom-color-trigger::-webkit-details-marker {
+  display: none;
+}
+
 .custom-color-trigger span,
 .custom-color-option span {
   width: 14px;
@@ -198,6 +216,7 @@ html, body {
   border-radius: 2px;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
 }
+
 .custom-color-menu {
   position: absolute;
   top: calc(100% + 6px);
@@ -211,6 +230,7 @@ html, body {
   background: #131722;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
 }
+
 .custom-color-option {
   display: flex;
   align-items: center;
@@ -225,7 +245,11 @@ html, body {
   text-align: left;
   cursor: pointer;
 }
-.custom-color-option:hover { background: #252a37; }
+
+.custom-color-option:hover {
+  background: #252a37;
+}
+
 .custom-level-input {
   width: 92px;
   height: 28px;
@@ -240,16 +264,20 @@ html, body {
   outline: none;
   text-align: center;
 }
+
 .custom-level-input::placeholder {
   text-align: center;
   color: #787b87;
 }
+
 .custom-level-input:focus {
   border-color: #f8ea3b;
 }
+
 .custom-add-btn {
   height: 28px;
 }
+
 .trash-btn {
   background: #1e222d;
   border: 1px solid #2a2e39;
@@ -263,11 +291,13 @@ html, body {
   cursor: pointer;
   padding: 0;
 }
+
 .trash-btn:hover {
   border-color: #e23442;
   color: #e23442;
   background: #252a37;
 }
+
 .trash-btn:disabled,
 .custom-add-btn:disabled,
 .custom-level-input:disabled {
@@ -294,10 +324,12 @@ html, body {
   grid-column: 1;
   grid-row: 1 / span 2;
 }
+
 .page .chart-ha-top {
   grid-column: 2;
   grid-row: 1;
 }
+
 .page .chart-ha-bottom {
   grid-column: 2;
   grid-row: 2;
@@ -309,11 +341,13 @@ html, body {
   grid-column: 2;
   grid-row: 1 / span 2;
 }
+
 .page.switched .chart-ha-top,
 .page.mirrored .chart-ha-top {
   grid-column: 1;
   grid-row: 1;
 }
+
 .page.switched .chart-ha-bottom,
 .page.mirrored .chart-ha-bottom {
   grid-column: 1;
@@ -328,6 +362,7 @@ html, body {
   overflow: hidden;
   cursor: crosshair;
 }
+
 .cell canvas,
 .cell table,
 .chart-canvas {
@@ -362,8 +397,14 @@ html, body {
   transform: translateX(-50%);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
 }
-.copy-toast-icon { font-size: 18px; }
-.copy-toast strong { color: #ff5252; }
+
+.copy-toast-icon {
+  font-size: 18px;
+}
+
+.copy-toast strong {
+  color: #ff5252;
+}
 
 /* --- header row: symbol / tf / EMA chips / price badge ------------------- */
 .cell-header {
@@ -381,13 +422,18 @@ html, body {
   pointer-events: auto;
   cursor: default;
 }
+
 .cell-header .symbol {
   color: #e0e3eb;
   font-weight: 600;
   font-size: 11px;
   white-space: nowrap;
 }
-.cell-header .tf { color: #ffffff; }
+
+.cell-header .tf {
+  color: #ffffff;
+}
+
 .cell-header .badge {
   display: inline-flex;
   align-items: center;
@@ -396,8 +442,16 @@ html, body {
   border-radius: 3px;
   font-size: 10px;
 }
-.cell-header .badge.up { background: rgba(8, 144, 122, 0.15); color: #08907a; }
-.cell-header .badge.down { background: rgba(226, 52, 66, 0.15); color: #e23442; }
+
+.cell-header .badge.up {
+  background: rgba(8, 144, 122, 0.15);
+  color: #08907a;
+}
+
+.cell-header .badge.down {
+  background: rgba(226, 52, 66, 0.15);
+  color: #e23442;
+}
 
 /* Inline EMA legend chips — match sample: orange (9/50), green (21), pink (200).
    Now a clickable <button>: toggles that EMA line on/off. The "off" chip is
@@ -409,6 +463,7 @@ html, body {
   gap: 4px;
   pointer-events: auto;
 }
+
 .ema-chip {
   width: 20px;
   height: 16px;
@@ -425,10 +480,22 @@ html, body {
   transition: transform 0.08s ease, filter 0.15s ease;
   font-family: inherit;
 }
-.ema-chip:hover { filter: brightness(1.15); }
-.ema-chip:active { transform: scale(0.92); }
-.ema-chip.off { cursor: pointer; }
-.ema-chip .chip-num { color: inherit; }
+
+.ema-chip:hover {
+  filter: brightness(1.15);
+}
+
+.ema-chip:active {
+  transform: scale(0.92);
+}
+
+.ema-chip.off {
+  cursor: pointer;
+}
+
+.ema-chip .chip-num {
+  color: inherit;
+}
 
 .ema-chip-pair {
   display: inline-flex;
@@ -442,9 +509,19 @@ html, body {
   transition: transform 0.08s ease, filter 0.15s ease;
   font-family: inherit;
 }
-.ema-chip-pair:hover { filter: brightness(1.15); }
-.ema-chip-pair:active { transform: scale(0.92); }
-.ema-chip-pair.off { cursor: pointer; }
+
+.ema-chip-pair:hover {
+  filter: brightness(1.15);
+}
+
+.ema-chip-pair:active {
+  transform: scale(0.92);
+}
+
+.ema-chip-pair.off {
+  cursor: pointer;
+}
+
 .ema-chip-segment {
   height: 16px;
   padding: 0 4px;
@@ -465,16 +542,52 @@ html, body {
   font: 700 8px/1 "JetBrains Mono", ui-monospace, monospace;
   cursor: pointer;
 }
+
 .footprint-chip.active {
   background: #f2f2f2;
   color: #0b0e13;
 }
+
 .footprint-chip.off {
   border-color: #454954;
   background: #1a1f29;
   color: #787b87;
 }
-.footprint-chip:hover { filter: brightness(1.12); }
+
+.footprint-chip:hover {
+  filter: brightness(1.12);
+}
+
+.beep-chip {
+  height: 16px;
+  border: 1px solid #454954;
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s, background-color 0.15s, filter 0.15s;
+}
+
+.beep-chip.active {
+  border-color: #f8c43a;
+  background: rgba(248, 196, 58, 0.15);
+  filter: none;
+}
+
+.beep-chip.off {
+  border-color: #454954;
+  background: #1a1f29;
+  opacity: 0.6;
+}
+
+.beep-chip:hover {
+  filter: brightness(1.2);
+  opacity: 1;
+}
 
 .level-chip {
   height: 16px;
@@ -485,17 +598,22 @@ html, body {
   cursor: pointer;
   transition: background-color 0.15s, border-color 0.15s, color 0.15s, filter 0.15s;
 }
+
 .level-chip.active {
   background: #2962ff;
   border-color: #2962ff;
   color: #ffffff;
 }
+
 .level-chip.off {
   border-color: #454954;
   background: #1a1f29;
   color: #787b87;
 }
-.level-chip:hover { filter: brightness(1.15); }
+
+.level-chip:hover {
+  filter: brightness(1.15);
+}
 
 /* OHLC hover legend — same row as symbol / EMA chips. */
 .ohlc-bar {
@@ -509,36 +627,56 @@ html, body {
   border: none;
   pointer-events: none;
 }
-.ohlc-bar b { color: #787b87; font-weight: 400; margin-right: 3px; }
-.ohlc-bar .up { color: #08907a; }
-.ohlc-bar .down { color: #e23442; }
 
-/* Global TZ dropdown — fixed bottom-right, aligned with LWC's time-axis strip.
-   LWC time-axis is 28px tall. Page padding = 4px, cell border = 1px → 5px gap. */
+.ohlc-bar b {
+  color: #787b87;
+  font-weight: 400;
+  margin-right: 3px;
+}
+
+.ohlc-bar .up {
+  color: #08907a;
+}
+
+.ohlc-bar .down {
+  color: #e23442;
+}
+
+/* Global TZ dropdown — fixed to the bottom-right corner of the chart (under price scale) */
 .global-tz-wrapper {
   position: fixed;
   bottom: 5px;
   right: 5px;
   z-index: 200;
-  height: 28px;
+  height: 26px;
+  width: 52px;
   display: flex;
   align-items: center;
+  justify-content: center;
 }
+
 .global-tz-select {
+  width: 100%;
+  height: 20px;
   background-color: #1e222d;
   border: 1px solid #2a2e39;
   color: #2962ff;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 10px;
   font-weight: 700;
-  height: 22px;
-  padding: 0 5px;
+  padding: 0;
   border-radius: 3px;
   cursor: pointer;
   outline: none;
-  letter-spacing: 0;
+  letter-spacing: -0.2px;
+  text-align: center;
+  text-align-last: center;
   transition: border-color 0.15s, color 0.15s, background-color 0.15s;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
 }
+
 .global-tz-select:hover,
 .global-tz-select:focus {
   border-color: #2962ff;
@@ -559,6 +697,7 @@ html, body {
   backdrop-filter: blur(8px);
   user-select: none;
 }
+
 .context-menu-item {
   width: 100%;
   background: transparent;
@@ -575,11 +714,15 @@ html, body {
   cursor: pointer;
   transition: background-color 0.15s, color 0.15s;
 }
+
 .context-menu-item:hover {
   background-color: #2962ff;
   color: #ffffff;
 }
-.context-menu-item svg { flex-shrink: 0; }
+
+.context-menu-item svg {
+  flex-shrink: 0;
+}
 
 /* Top-bar TZ group: a small "TZ" label + the same tf-pill group. */
 .tz-group {
@@ -587,15 +730,18 @@ html, body {
   align-items: center;
   gap: 6px;
 }
+
 .tz-label {
   color: #787b87;
   font: 600 10px/1 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
+
 .tz-pick {
   height: 26px;
 }
+
 .tz-pick .tf-btn {
   font-size: 10px;
   padding: 0 7px;
@@ -613,8 +759,17 @@ html, body {
   align-items: center;
   gap: 6px;
 }
-.status .dot { width: 6px; height: 6px; border-radius: 50%; background: #08907a; }
-.status .dot.off { background: #e23442; }
+
+.status .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #08907a;
+}
+
+.status .dot.off {
+  background: #e23442;
+}
 
 /* ── TopBar symbol dropdown ────────────────────────────────────────────── */
 .symbol-dropdown {
@@ -622,12 +777,15 @@ html, body {
   display: inline-flex;
   align-items: center;
 }
+
 .symbol-dropdown summary {
   list-style: none;
 }
+
 .symbol-dropdown summary::-webkit-details-marker {
   display: none;
 }
+
 .symbol-box-wrapper {
   display: inline-flex;
   align-items: center;
@@ -642,9 +800,11 @@ html, body {
   user-select: none;
   white-space: nowrap;
 }
+
 .symbol-box-wrapper:hover {
   background-color: #252a37;
 }
+
 .symbol-display-text {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 12px;
@@ -652,6 +812,7 @@ html, body {
   color: #ffffff;
   letter-spacing: -0.2px;
 }
+
 .symbol-menu {
   position: absolute;
   top: calc(100% + 6px);
@@ -668,6 +829,7 @@ html, body {
   flex-direction: column;
   gap: 2px;
 }
+
 .symbol-option {
   display: flex;
   align-items: center;
@@ -685,10 +847,12 @@ html, body {
   cursor: pointer;
   transition: background-color 0.15s, color 0.15s;
 }
+
 .symbol-option:hover {
   background-color: #2a2e39;
   color: #ffffff;
 }
+
 .symbol-option.active {
   background-color: rgba(41, 98, 255, 0.2);
   color: #2962ff;
@@ -701,11 +865,13 @@ html, body {
   align-items: center;
   gap: 8px;
 }
+
 .date-stepper-container {
   display: flex;
   align-items: center;
   gap: 4px;
 }
+
 .date-stepper-btn {
   background-color: #1e222d;
   border: 1px solid #2a2e39;
@@ -722,16 +888,19 @@ html, body {
   justify-content: center;
   transition: background-color 0.15s, border-color 0.15s, color 0.15s;
 }
+
 .date-stepper-btn:hover:not(:disabled) {
   background-color: #252a37;
   border-color: #2962ff;
   color: #ffffff;
 }
+
 .date-stepper-btn:disabled {
   opacity: 0.3;
   cursor: not-allowed;
   border-color: transparent;
 }
+
 /* The date pill: "Sat 2026-10-24" */
 .date-box-wrapper {
   display: flex;
@@ -747,9 +916,11 @@ html, body {
   transition: border-color 0.2s, background-color 0.2s;
   user-select: none;
 }
+
 .date-box-wrapper:hover {
   background-color: #252a37;
 }
+
 .date-dayname-text {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 12px;
@@ -759,6 +930,7 @@ html, body {
   text-align: center;
   text-transform: uppercase;
 }
+
 .date-display-text {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 12px;
@@ -779,17 +951,20 @@ html, body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   user-select: none;
 }
+
 .cal-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 10px;
 }
+
 .cal-title {
   font-size: 13px;
   font-weight: 700;
   color: #ffffff;
 }
+
 .cal-nav-btn {
   background: transparent;
   border: 1px solid #2a2e39;
@@ -804,8 +979,17 @@ html, body {
   font-size: 11px;
   transition: background-color 0.15s, color 0.15s;
 }
-.cal-nav-btn:hover:not(:disabled) { background-color: #2a2e39; color: #fff; }
-.cal-nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.cal-nav-btn:hover:not(:disabled) {
+  background-color: #2a2e39;
+  color: #fff;
+}
+
+.cal-nav-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
 .cal-weekdays {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
@@ -815,11 +999,13 @@ html, body {
   color: #787b87;
   margin-bottom: 6px;
 }
+
 .cal-days-grid {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   gap: 2px;
 }
+
 .cal-day-cell {
   aspect-ratio: 1;
   display: flex;
@@ -832,21 +1018,27 @@ html, body {
   cursor: pointer;
   transition: background-color 0.15s;
 }
+
 .cal-day-cell:hover:not(.disabled):not(.selected) {
   background-color: #2962ff;
   color: #ffffff;
 }
+
 .cal-day-cell.selected {
   background-color: #2962ff;
   color: #ffffff;
   font-weight: 700;
 }
+
 .cal-day-cell.disabled {
   color: #3b4252;
-  background-color: rgba(255,255,255,0.02);
+  background-color: rgba(255, 255, 255, 0.02);
   cursor: not-allowed;
   opacity: 0.4;
 }
-.cal-day-cell.empty { cursor: default; }
+
+.cal-day-cell.empty {
+  cursor: default;
+}
 
 /* TopBar live badge — removed (no live indicator needed) */
