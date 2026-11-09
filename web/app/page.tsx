@@ -27,7 +27,7 @@ function setLocalCustomLevels(levels: CustomLevel[]) {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(STORAGE_KEY_CUSTOM_LEVELS, JSON.stringify(levels));
-  } catch { }
+  } catch {}
 }
 
 const DEFAULT_TOGGLES: LineToggles = {
