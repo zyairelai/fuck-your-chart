@@ -98,6 +98,33 @@ body {
   gap: 2px;
 }
 
+.topbar-bell-btn {
+  height: 28px;
+  width: 28px;
+  background-color: #1e222d;
+  border: 1px solid #2a2e39;
+  color: #787b87;
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  transition: color 0.15s, background-color 0.15s, border-color 0.15s;
+}
+
+.topbar-bell-btn:hover {
+  color: #f8c43a;
+  border-color: #f8c43a;
+  background-color: #252a37;
+}
+
+.topbar-bell-btn.active {
+  color: #f8c43a;
+  border-color: #f8c43a;
+  background-color: rgba(248, 196, 58, 0.18);
+}
+
 .timeframe-btn {
   background: transparent;
   border: none;
@@ -558,14 +585,14 @@ body {
   filter: brightness(1.12);
 }
 
-/* Bottom-right corner bell on main chart */
+/* 5m bell alert — fixed bottom-right, to the left of the UTC+8 box, never moves on layout flip */
 .chart-corner-bell-wrapper {
-  position: absolute;
-  bottom: 0px;
-  right: 0px;
-  z-index: 50;
+  position: fixed;
+  bottom: 5px;
+  right: 62px;
+  z-index: 200;
   height: 26px;
-  width: 52px;
+  width: 46px;
   display: flex;
   align-items: center;
   justify-content: center;

@@ -9,4 +9,10 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=8000
+    volumes:
+      # Persist custom price levels across container restarts
+      - custom-levels-data:/app/data
     restart: unless-stopped
+
+volumes:
+  custom-levels-data:

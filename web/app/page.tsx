@@ -30,6 +30,16 @@ function setLocalCustomLevels(levels: CustomLevel[]) {
   } catch {}
 }
 
+function areLevelsEqual(a: CustomLevel[], b: CustomLevel[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].price !== b[i].price || a[i].color !== b[i].color) {
+      return false;
+    }
+  }
+  return true;
+}
+
 const DEFAULT_TOGGLES: LineToggles = {
   weekly: true,
   monday: false,
@@ -155,8 +165,11 @@ export default function Page() {
       });
       if (res.ok) {
         const result = (await res.json()) as { customLevels: CustomLevel[] };
-        setCustomLevels(result.customLevels);
-        setLocalCustomLevels(result.customLevels);
+        setCustomLevels((prev) => {
+          if (areLevelsEqual(prev, result.customLevels)) return prev;
+          setLocalCustomLevels(result.customLevels);
+          return result.customLevels;
+        });
         setCustomLevelsError(null);
         return;
       }
@@ -172,7 +185,7 @@ export default function Page() {
       current = [];
     }
     setLocalCustomLevels(current);
-    setCustomLevels(current);
+    setCustomLevels((prev) => (areLevelsEqual(prev, current) ? prev : current));
     setCustomLevelsError(null);
   }, []);
 
@@ -183,8 +196,11 @@ export default function Page() {
       });
       if (res.ok) {
         const result = (await res.json()) as { customLevels: CustomLevel[] };
-        setCustomLevels(result.customLevels);
-        setLocalCustomLevels(result.customLevels);
+        setCustomLevels((prev) => {
+          if (areLevelsEqual(prev, result.customLevels)) return prev;
+          setLocalCustomLevels(result.customLevels);
+          return result.customLevels;
+        });
         setCustomLevelsError(null);
         return;
       }
@@ -197,16 +213,47 @@ export default function Page() {
       (l) => Math.abs(Math.round(l.price * 2) / 2 - roundedTarget) >= 0.01,
     );
     setLocalCustomLevels(current);
-    setCustomLevels(current);
+    setCustomLevels((prev) => (areLevelsEqual(prev, current) ? prev : current));
     setCustomLevelsError(null);
   }, []);
 
   useEffect(() => {
+    // Initial fetch on mount
     void customLevelsRequest("GET")
       .catch((err: unknown) => {
         setCustomLevelsError(err instanceof Error ? err.message : "Could not load custom levels");
       })
       .finally(() => setCustomLevelsReady(true));
+
+    // Auto-sync custom levels across browsers/tabs every 2s without manual refresh
+    const pollInterval = setInterval(() => {
+      void customLevelsRequest("GET");
+    }, 2000);
+
+    // Immediate sync when tab/window regains focus (e.g. switching from Firefox to Chrome)
+    const onFocus = () => {
+      void customLevelsRequest("GET");
+    };
+    window.addEventListener("focus", onFocus);
+
+    // Cross-tab sync within the same browser
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY_CUSTOM_LEVELS && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          if (Array.isArray(parsed)) {
+            setCustomLevels((prev) => (areLevelsEqual(prev, parsed) ? prev : parsed));
+          }
+        } catch {}
+      }
+    };
+    window.addEventListener("storage", onStorage);
+
+    return () => {
+      clearInterval(pollInterval);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("storage", onStorage);
+    };
   }, [customLevelsRequest]);
 
   const handleSymbolChange = useCallback((newSymbol: string) => {
@@ -244,6 +291,8 @@ export default function Page() {
         customLevelsError={customLevelsError}
         onAddCustom={(price, color) => customLevelsRequest("POST", { price, color })}
         onClearCustom={() => customLevelsRequest("DELETE")}
+        beep5mEnabled={beep5mEnabled}
+        onToggleBeep5m={toggleBeep5m}
       />
       <main className={`page${switchedLayout ? " switched" : ""}`}>
         <div className="cell chart-main">
@@ -267,33 +316,6 @@ export default function Page() {
             registerLinkedCrosshair={isSynchronized ? registerLinkedCrosshair : undefined}
             onLinkedCrosshair={isSynchronized ? syncLinkedCrosshair : undefined}
           />
-          <div className="chart-corner-bell-wrapper">
-            <button
-              type="button"
-              className={`corner-beep-btn${beep5mEnabled ? " active" : " off"}`}
-              title={
-                beep5mEnabled
-                  ? "5m candle close alert: ON (rings every 5m) — click to turn off"
-                  : "5m candle close alert: OFF — click to turn on"
-              }
-              onClick={toggleBeep5m}
-              aria-pressed={beep5mEnabled}
-            >
-              <svg
-                width="12"
-                height="12"
-                viewBox="0 0 24 24"
-                fill={beep5mEnabled ? "currentColor" : "none"}
-                stroke="currentColor"
-                strokeWidth="2.2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-              </svg>
-            </button>
-          </div>
         </div>
         <div className="cell chart-ha-top">
           <Chart

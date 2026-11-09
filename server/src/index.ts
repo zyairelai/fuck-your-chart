@@ -8,6 +8,7 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import cors from "cors";
+import { readFileSync, writeFileSync, mkdirSync } from "fs";
 
 import { klinesFutures } from "./binance.js";
 
@@ -21,15 +22,48 @@ const ALLOWED_INTERVALS = new Set([
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const app = express();
-app.use(cors());
-app.use(express.json());
+// --- Persistent custom levels (file-backed) ---
+const DATA_DIR = path.resolve(__dirname, "..", "data");
+const LEVELS_FILE = path.join(DATA_DIR, "custom-levels.json");
 
-const customLevels: { price: number; color: "red" | "yellow" | "green" }[] = [];
+function loadCustomLevels(): { price: number; color: "red" | "yellow" | "green" }[] {
+  try {
+    mkdirSync(DATA_DIR, { recursive: true });
+    const raw = readFileSync(LEVELS_FILE, "utf8");
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter(
+        (l): l is { price: number; color: "red" | "yellow" | "green" } =>
+          typeof l === "object" && l !== null &&
+          typeof (l as { price?: unknown }).price === "number" &&
+          isCustomLevelColor((l as { color?: unknown }).color),
+      );
+    }
+  } catch {
+    // File missing or corrupt — start fresh
+  }
+  return [];
+}
+
+function saveCustomLevels(levels: { price: number; color: "red" | "yellow" | "green" }[]) {
+  try {
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(LEVELS_FILE, JSON.stringify(levels, null, 2), "utf8");
+  } catch (err) {
+    console.error("[custom-levels] could not save:", err);
+  }
+}
 
 function isCustomLevelColor(value: unknown): value is "red" | "yellow" | "green" {
   return value === "red" || value === "yellow" || value === "green";
 }
+
+const customLevels = loadCustomLevels();
+console.log(`[boot] loaded ${customLevels.length} custom level(s) from ${LEVELS_FILE}`);
+
+const app = express();
+app.use(cors());
+app.use(express.json());
 
 // --- REST Endpoints ---
 app.get("/api/status", (_req, res) => {
@@ -64,6 +98,7 @@ app.post("/api/custom-levels", (req, res) => {
     price: Math.round(level.price * 2) / 2,
     color: level.color,
   });
+  saveCustomLevels(customLevels);
   res.status(201).json({ customLevels });
 });
 
@@ -85,6 +120,7 @@ app.delete("/api/custom-levels", (req, res) => {
   } else {
     customLevels.length = 0;
   }
+  saveCustomLevels(customLevels);
   res.json({ customLevels });
 });
 
