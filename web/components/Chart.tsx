@@ -23,7 +23,6 @@ import {
   seedHistory,
   type Kline,
 } from "../lib/historyStore";
-import { play5mCloseAlert, playTestChirp, getAudioContext } from "../lib/audioAlert";
 
 
 interface HoverData {
@@ -387,8 +386,6 @@ interface Props {
   allowFootprint?: boolean;
   /** Whether the footprint pane is visible on first mount. */
   defaultFootprintEnabled?: boolean;
-  /** Whether this chart instance can show the beep-on-close toggle. */
-  allowBeep?: boolean;
   /** Whether the price levels (zones and custom) are visible on first mount. */
   defaultLevelsEnabled?: boolean;
   /** Display timezone offset (hours). Shared global state from page. */
@@ -417,7 +414,6 @@ export default function Chart({
   defaultEmaOff = DEFAULT_EMA_OFF,
   allowFootprint = true,
   defaultFootprintEnabled = false,
-  allowBeep = false,
   defaultLevelsEnabled = true,
   tz = 0,
   zones = null,
@@ -514,10 +510,6 @@ export default function Chart({
   const levelsEnabledRef = useRef(defaultLevelsEnabled);
   levelsEnabledRef.current = levelsEnabled;
   const copyToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Beep-on-close state (only relevant when allowBeep=true)
-  const [beepEnabled, setBeepEnabled] = useState(false);
-  const beepEnabledRef = useRef(false);
 
   /** Right-click context menu state. */
   const customLevelsRef = useRef(customLevels);
@@ -1679,60 +1671,6 @@ export default function Chart({
     };
   }, [interval, heikin, symbol]);
 
-  // --- Exact wall-clock timer for candle close beep (:00 turn) ---
-  useEffect(() => {
-    if (!allowBeep || !beepEnabled) return;
-
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let lastBeepedBar = -1;
-
-    // Interval duration in milliseconds (e.g. 5m = 300,000 ms)
-    const stepMs = Math.max(60000, intervalSeconds(interval) * 1000);
-
-    const scheduleNextBeep = () => {
-      if (cancelled) return;
-      const now = Date.now();
-      const msIntoCurrentBar = now % stepMs;
-      // Exact milliseconds until the candle closes (turns :00)
-      const msUntilClose = stepMs - msIntoCurrentBar;
-
-      timer = setTimeout(() => {
-        if (cancelled) return;
-        const currentNow = Date.now();
-        const barTimestamp = Math.floor(currentNow / stepMs) * stepMs;
-        if (lastBeepedBar !== barTimestamp) {
-          lastBeepedBar = barTimestamp;
-          play5mCloseAlert();
-        }
-        scheduleNextBeep();
-      }, msUntilClose);
-    };
-
-    scheduleNextBeep();
-
-    // High-frequency backup interval (100ms) to guarantee exact :00 turn
-    const backupInterval = setInterval(() => {
-      if (cancelled) return;
-      const now = Date.now();
-      const msIntoCurrentBar = now % stepMs;
-      // In the first 600ms of the new bar (e.g. :00.000 to :00.600)
-      if (msIntoCurrentBar >= 0 && msIntoCurrentBar < 600) {
-        const barTimestamp = Math.floor(now / stepMs) * stepMs;
-        if (lastBeepedBar !== barTimestamp) {
-          lastBeepedBar = barTimestamp;
-          play5mCloseAlert();
-        }
-      }
-    }, 100);
-
-    return () => {
-      cancelled = true;
-      if (timer !== null) clearTimeout(timer);
-      clearInterval(backupInterval);
-    };
-  }, [allowBeep, beepEnabled, interval]);
-
   const fmt = (n: number | null) =>
     n == null ? "—" : n.toLocaleString(undefined, { maximumFractionDigits: 2 });
 
@@ -1813,27 +1751,6 @@ export default function Chart({
             }}
           >
             Delta
-          </button>
-        )}
-        {allowBeep && (
-          <button
-            type="button"
-            className={`beep-chip${beepEnabled ? " active" : " off"}`}
-            aria-pressed={beepEnabled}
-            title={beepEnabled ? "Beep on 5m close — ON (click to turn off)" : "Beep on 5m close — OFF (click to turn on)"}
-            onClick={(e) => {
-              e.stopPropagation();
-              const next = !beepEnabledRef.current;
-              beepEnabledRef.current = next;
-              setBeepEnabled(next);
-              // Warm up the AudioContext and play a quick chirp on enable
-              if (next) {
-                getAudioContext();
-                playTestChirp();
-              }
-            }}
-          >
-            🔔
           </button>
         )}
         <div className="ohlc-bar">

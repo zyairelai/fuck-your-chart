@@ -6,6 +6,7 @@ import Chart from "../components/Chart";
 import TopBar from "../components/TopBar";
 import type { TzOffset, Zones, LineToggles, CustomLevel, LinkedCrosshairId, LinkedCrosshairSync } from "../components/Chart";
 import { fetchZones } from "../lib/zones";
+import { play5mCloseAlert, playTestChirp, getAudioContext } from "../lib/audioAlert";
 
 const ALL_EMAS = [10, 20, 50, 200];
 const STORAGE_KEY_CUSTOM_LEVELS = "fuck-your-chart:custom-levels:v1";
@@ -26,7 +27,7 @@ function setLocalCustomLevels(levels: CustomLevel[]) {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(STORAGE_KEY_CUSTOM_LEVELS, JSON.stringify(levels));
-  } catch {}
+  } catch { }
 }
 
 const DEFAULT_TOGGLES: LineToggles = {
@@ -76,6 +77,70 @@ export default function Page() {
   const [customLevels, setCustomLevels] = useState<CustomLevel[]>([]);
   const [customLevelsReady, setCustomLevelsReady] = useState(false);
   const [customLevelsError, setCustomLevelsError] = useState<string | null>(null);
+
+  // 5-minute candle close alert (independent of active timeframe)
+  const [beep5mEnabled, setBeep5mEnabled] = useState(false);
+
+  const toggleBeep5m = useCallback(() => {
+    setBeep5mEnabled((prev) => {
+      const next = !prev;
+      if (next) {
+        getAudioContext();
+        playTestChirp();
+      }
+      return next;
+    });
+  }, []);
+
+  // Exact wall-clock timer for 5m candle close alert (:00, :05, :10, etc.)
+  useEffect(() => {
+    if (!beep5mEnabled) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let lastBeepedBar = -1;
+    const stepMs = 300000; // strictly 5 minutes
+
+    const scheduleNextBeep = () => {
+      if (cancelled) return;
+      const now = Date.now();
+      const msIntoCurrentBar = now % stepMs;
+      const msUntilClose = stepMs - msIntoCurrentBar;
+
+      timer = setTimeout(() => {
+        if (cancelled) return;
+        const currentNow = Date.now();
+        const barTimestamp = Math.floor(currentNow / stepMs) * stepMs;
+        if (lastBeepedBar !== barTimestamp) {
+          lastBeepedBar = barTimestamp;
+          play5mCloseAlert();
+        }
+        scheduleNextBeep();
+      }, msUntilClose);
+    };
+
+    scheduleNextBeep();
+
+    // High-frequency backup interval (100ms) to guarantee exact :00 turn
+    const backupInterval = setInterval(() => {
+      if (cancelled) return;
+      const now = Date.now();
+      const msIntoCurrentBar = now % stepMs;
+      if (msIntoCurrentBar >= 0 && msIntoCurrentBar < 600) {
+        const barTimestamp = Math.floor(now / stepMs) * stepMs;
+        if (lastBeepedBar !== barTimestamp) {
+          lastBeepedBar = barTimestamp;
+          play5mCloseAlert();
+        }
+      }
+    }, 100);
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) clearTimeout(timer);
+      clearInterval(backupInterval);
+    };
+  }, [beep5mEnabled]);
 
   const toggleLayout = useCallback(() => {
     setSwitchedLayout((prev) => !prev);
@@ -189,7 +254,6 @@ export default function Page() {
             emas={ALL_EMAS}
             allowFootprint={true}
             defaultFootprintEnabled={true}
-            allowBeep={true}
             defaultLevelsEnabled={true}
             tz={tz}
             zones={zones}
@@ -203,6 +267,33 @@ export default function Page() {
             registerLinkedCrosshair={isSynchronized ? registerLinkedCrosshair : undefined}
             onLinkedCrosshair={isSynchronized ? syncLinkedCrosshair : undefined}
           />
+          <div className="chart-corner-bell-wrapper">
+            <button
+              type="button"
+              className={`corner-beep-btn${beep5mEnabled ? " active" : " off"}`}
+              title={
+                beep5mEnabled
+                  ? "5m candle close alert: ON (rings every 5m) — click to turn off"
+                  : "5m candle close alert: OFF — click to turn on"
+              }
+              onClick={toggleBeep5m}
+              aria-pressed={beep5mEnabled}
+            >
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill={beep5mEnabled ? "currentColor" : "none"}
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+              </svg>
+            </button>
+          </div>
         </div>
         <div className="cell chart-ha-top">
           <Chart
