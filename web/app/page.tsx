@@ -40,6 +40,12 @@ function areLevelsEqual(a: CustomLevel[], b: CustomLevel[]): boolean {
   return true;
 }
 
+export interface AppSettings {
+  lineToggles: LineToggles;
+  levelsEnabled: boolean;
+  emaEnabled: number[];
+}
+
 const DEFAULT_TOGGLES: LineToggles = {
   weekly: true,
   monday: false,
@@ -48,29 +54,41 @@ const DEFAULT_TOGGLES: LineToggles = {
   weekend: false,
 };
 
-const STORAGE_KEY_TOGGLES = "fuck-your-chart:line-toggles:v1";
+const DEFAULT_SETTINGS: AppSettings = {
+  lineToggles: DEFAULT_TOGGLES,
+  levelsEnabled: true,
+  emaEnabled: ALL_EMAS,
+};
 
-function getLocalToggles(): LineToggles | null {
-  if (typeof window === "undefined") return null;
+const STORAGE_KEY_SETTINGS = "fuck-your-chart:settings:v1";
+
+function getLocalSettings(): AppSettings {
+  if (typeof window === "undefined") return DEFAULT_SETTINGS;
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY_TOGGLES);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as LineToggles;
-    if (
-      typeof parsed.weekly === "boolean" &&
-      typeof parsed.monday === "boolean" &&
-      typeof parsed.pdhlm === "boolean" &&
-      typeof parsed.fibb === "boolean" &&
-      typeof parsed.weekend === "boolean"
-    ) return parsed;
-  } catch {}
-  return null;
+    const raw = window.localStorage.getItem(STORAGE_KEY_SETTINGS);
+    if (!raw) return DEFAULT_SETTINGS;
+    const parsed = JSON.parse(raw);
+    const toggles = (parsed.lineToggles && typeof parsed.lineToggles === "object") ? parsed.lineToggles : parsed;
+    return {
+      lineToggles: {
+        weekly: typeof toggles.weekly === "boolean" ? toggles.weekly : DEFAULT_TOGGLES.weekly,
+        monday: typeof toggles.monday === "boolean" ? toggles.monday : DEFAULT_TOGGLES.monday,
+        pdhlm: typeof toggles.pdhlm === "boolean" ? toggles.pdhlm : DEFAULT_TOGGLES.pdhlm,
+        fibb: typeof toggles.fibb === "boolean" ? toggles.fibb : DEFAULT_TOGGLES.fibb,
+        weekend: typeof toggles.weekend === "boolean" ? toggles.weekend : DEFAULT_TOGGLES.weekend,
+      },
+      levelsEnabled: typeof parsed.levelsEnabled === "boolean" ? parsed.levelsEnabled : true,
+      emaEnabled: Array.isArray(parsed.emaEnabled) ? parsed.emaEnabled : ALL_EMAS,
+    };
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
 }
 
-function setLocalToggles(t: LineToggles) {
+function setLocalSettings(s: AppSettings) {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(STORAGE_KEY_TOGGLES, JSON.stringify(t));
+    window.localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(s));
   } catch {}
 }
 
@@ -82,6 +100,17 @@ function areTogglesEqual(a: LineToggles, b: LineToggles): boolean {
     a.fibb === b.fibb &&
     a.weekend === b.weekend
   );
+}
+
+function areSettingsEqual(a: AppSettings, b: AppSettings): boolean {
+  if (a.levelsEnabled !== b.levelsEnabled) return false;
+  if (!areTogglesEqual(a.lineToggles, b.lineToggles)) return false;
+  if (a.emaEnabled.length !== b.emaEnabled.length) return false;
+  const setA = new Set(a.emaEnabled);
+  for (const n of b.emaEnabled) {
+    if (!setA.has(n)) return false;
+  }
+  return true;
 }
 
 export default function Page() {
@@ -119,7 +148,10 @@ export default function Page() {
   const [tz, setTz] = useState<TzOffset>(8);
   const [switchedLayout, setSwitchedLayout] = useState(false);
   const [zones, setZones] = useState<Zones | null>(null);
-  const [toggles, setToggles] = useState<LineToggles>(DEFAULT_TOGGLES);
+  const [appSettings, setAppSettings] = useState<AppSettings>(() => getLocalSettings());
+  const toggles = appSettings.lineToggles;
+  const levelsEnabled = appSettings.levelsEnabled;
+  const emaEnabled = appSettings.emaEnabled;
   const [customLevels, setCustomLevels] = useState<CustomLevel[]>([]);
   const [customLevelsReady, setCustomLevelsReady] = useState(false);
   const [customLevelsError, setCustomLevelsError] = useState<string | null>(null);
@@ -305,43 +337,43 @@ export default function Page() {
     setZones(data);
   }, [symbol]);
 
-  // Fetch line-toggle settings from backend (or fall back to localStorage)
-  const fetchToggles = useCallback(async () => {
+  // Fetch all settings from backend (or fall back to localStorage)
+  const fetchSettings = useCallback(async () => {
     try {
       const res = await fetch("/api/settings");
       if (res.ok) {
-        const data = (await res.json()) as { lineToggles: LineToggles };
-        const remote = data.lineToggles;
-        setToggles((prev) => (areTogglesEqual(prev, remote) ? prev : remote));
-        setLocalToggles(remote);
+        const data = (await res.json()) as { lineToggles: LineToggles; levelsEnabled: boolean; emaEnabled: number[] };
+        const remote: AppSettings = {
+          lineToggles: data.lineToggles ?? DEFAULT_TOGGLES,
+          levelsEnabled: typeof data.levelsEnabled === "boolean" ? data.levelsEnabled : true,
+          emaEnabled: Array.isArray(data.emaEnabled) ? data.emaEnabled : ALL_EMAS,
+        };
+        setAppSettings((prev) => (areSettingsEqual(prev, remote) ? prev : remote));
+        setLocalSettings(remote);
       }
     } catch {
       // Backend unavailable (GitHub Pages etc.) — keep local state
     }
   }, []);
 
-  // Initial load of toggles + background poll for cross-browser sync
+  // Initial load of settings + background poll for cross-browser sync
   useEffect(() => {
-    // Seed from localStorage immediately so there's no flicker before the network round-trip
-    const saved = getLocalToggles();
-    if (saved) setToggles(saved);
-
-    void fetchToggles();
+    void fetchSettings();
 
     const pollInterval = setInterval(() => {
-      void fetchToggles();
+      void fetchSettings();
     }, 2000);
 
-    const onFocus = () => { void fetchToggles(); };
+    const onFocus = () => { void fetchSettings(); };
     window.addEventListener("focus", onFocus);
 
     // Cross-tab sync within the same browser
     const onStorage = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY_TOGGLES && e.newValue) {
+      if (e.key === STORAGE_KEY_SETTINGS && e.newValue) {
         try {
-          const parsed = JSON.parse(e.newValue) as LineToggles;
-          if (typeof parsed.weekly === "boolean") {
-            setToggles((prev) => (areTogglesEqual(prev, parsed) ? prev : parsed));
+          const parsed = JSON.parse(e.newValue) as AppSettings;
+          if (parsed.lineToggles && typeof parsed.lineToggles === "object") {
+            setAppSettings((prev) => (areSettingsEqual(prev, parsed) ? prev : parsed));
           }
         } catch {}
       }
@@ -353,12 +385,39 @@ export default function Page() {
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("storage", onStorage);
     };
-  }, [fetchToggles]);
-
+  }, [fetchSettings]);
   const onToggle = useCallback((key: keyof LineToggles) => {
-    setToggles((prev) => {
-      const next = { ...prev, [key]: !prev[key] };
-      setLocalToggles(next);
+    setAppSettings((prev) => {
+      const next: AppSettings = { ...prev, lineToggles: { ...prev.lineToggles, [key]: !prev.lineToggles[key] } };
+      setLocalSettings(next);
+      void fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(next),
+      }).catch(() => {});
+      return next;
+    });
+  }, []);
+
+  const onToggleLevels = useCallback(() => {
+    setAppSettings((prev) => {
+      const next: AppSettings = { ...prev, levelsEnabled: !prev.levelsEnabled };
+      setLocalSettings(next);
+      void fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(next),
+      }).catch(() => {});
+      return next;
+    });
+  }, []);
+
+  const onToggleEma = useCallback((period: number) => {
+    setAppSettings((prev) => {
+      const set = new Set(prev.emaEnabled);
+      if (set.has(period)) set.delete(period); else set.add(period);
+      const next: AppSettings = { ...prev, emaEnabled: Array.from(set) };
+      setLocalSettings(next);
       void fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -410,6 +469,10 @@ export default function Page() {
             linkedCrosshairId={isSynchronized ? "raw" : undefined}
             registerLinkedCrosshair={isSynchronized ? registerLinkedCrosshair : undefined}
             onLinkedCrosshair={isSynchronized ? syncLinkedCrosshair : undefined}
+            levelsEnabled={levelsEnabled}
+            onToggleLevels={onToggleLevels}
+            emaEnabled={emaEnabled}
+            onToggleEma={onToggleEma}
           />
         </div>
         <div className="cell chart-ha-top">
@@ -433,6 +496,8 @@ export default function Page() {
             linkedCrosshairId={isSynchronized ? "heikin" : undefined}
             registerLinkedCrosshair={isSynchronized ? registerLinkedCrosshair : undefined}
             onLinkedCrosshair={isSynchronized ? syncLinkedCrosshair : undefined}
+            emaEnabled={emaEnabled}
+            onToggleEma={onToggleEma}
           />
         </div>
         <div className="cell chart-ha-bottom">
@@ -451,6 +516,8 @@ export default function Page() {
             customLevels={customLevels}
             onDeleteCustomLevel={onDeleteCustomLevel}
             onChartDoubleClick={toggleLayout}
+            emaEnabled={emaEnabled}
+            onToggleEma={onToggleEma}
           />
         </div>
       </main>
