@@ -388,12 +388,6 @@ interface Props {
   defaultFootprintEnabled?: boolean;
   /** Whether the price levels (zones and custom) are visible on first mount. */
   defaultLevelsEnabled?: boolean;
-  /** Controlled price levels on/off state (synchronized across charts & browsers). */
-  levelsEnabled?: boolean;
-  onToggleLevels?: () => void;
-  /** Controlled active EMA periods (synchronized across charts & browsers). */
-  emaEnabled?: number[];
-  onToggleEma?: (period: number) => void;
   /** Display timezone offset (hours). Shared global state from page. */
   tz?: TzOffset;
   /** Horizontal levels from the calendar date (does not move the chart). */
@@ -421,10 +415,6 @@ export default function Chart({
   allowFootprint = true,
   defaultFootprintEnabled = false,
   defaultLevelsEnabled = true,
-  levelsEnabled: propLevelsEnabled,
-  onToggleLevels,
-  emaEnabled: propEmaEnabled,
-  onToggleEma,
   tz = 0,
   zones = null,
   lineToggles = { weekly: true, monday: false, pdhlm: true, fibb: false, weekend: false },
@@ -516,9 +506,8 @@ export default function Chart({
   const [copyToast, setCopyToast] = useState<string | null>(null);
   const [footprintEnabled, setFootprintEnabled] = useState(allowFootprint && defaultFootprintEnabled);
   const footprintEnabledRef = useRef(allowFootprint && defaultFootprintEnabled);
-  const [internalLevelsEnabled, setInternalLevelsEnabled] = useState(defaultLevelsEnabled);
-  const levelsEnabled = propLevelsEnabled !== undefined ? propLevelsEnabled : internalLevelsEnabled;
-  const levelsEnabledRef = useRef(levelsEnabled);
+  const [levelsEnabled, setLevelsEnabled] = useState(defaultLevelsEnabled);
+  const levelsEnabledRef = useRef(defaultLevelsEnabled);
   levelsEnabledRef.current = levelsEnabled;
   const copyToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -534,49 +523,30 @@ export default function Chart({
   /** Currently-selected display timezone — comes from the top bar. */
 
   /** Per-EMA on/off state. Default: all on, except those in `defaultEmaOff`. */
-  const [internalEmaEnabled, setInternalEmaEnabled] = useState<Set<number>>(() => {
+  const [emaEnabled, setEmaEnabled] = useState<Set<number>>(() => {
     const s = new Set<number>();
     for (const p of emas) {
       if (!defaultEmaOff.includes(p)) s.add(p);
     }
     return s;
   });
-
-  const emaEnabled = React.useMemo(() => {
-    if (propEmaEnabled !== undefined) {
-      return new Set(propEmaEnabled);
-    }
-    return internalEmaEnabled;
-  }, [propEmaEnabled, internalEmaEnabled]);
-
   const emaEnabledRef = useRef(emaEnabled);
   emaEnabledRef.current = emaEnabled;
 
-  // Ref so the EMA-sync effect below can call paintEmas even before it's defined in the closure
-  const paintEmasCallbackRef = useRef<((bars: Kline[]) => void) | null>(null);
-
   const emasKey = emas.join(",");
-  /** Keep `internalEmaEnabled` in sync if `emas` ever changes, preserving user toggles. */
+  /** Keep `emaEnabled` in sync if `emas` ever changes, preserving user toggles. */
   useEffect(() => {
-    setInternalEmaEnabled((prev) => {
+    setEmaEnabled((prev) => {
       const next = new Set<number>();
       for (const p of emas) {
         if (prev.has(p)) {
           next.add(p);
         }
       }
+      emaEnabledRef.current = next;
       return next;
     });
   }, [emasKey]);
-
-  // When active EMAs change (e.g. from synchronized prop), redraw EMA lines
-  useEffect(() => {
-    if (!candleRef.current) return;
-    const bars = displayCacheRef.current.length > 0 ? displayCacheRef.current : displayedBars(cacheRef.current);
-    if (bars.length > 0 && paintEmasCallbackRef.current) {
-      paintEmasCallbackRef.current(bars);
-    }
-  }, [emaEnabled]);
 
   /** Candle series the user actually sees — raw OHLC or Heikin Ashi. */
   const displayedBars = (raw: Kline[]): Kline[] => (heikin ? toHeikin(raw) : raw);
@@ -801,8 +771,6 @@ export default function Chart({
       line.setData(data);
     }
   };
-  // Keep ref in sync so the EMA-sync effect above can call it
-  paintEmasCallbackRef.current = paintEmas;
 
   /** (Re)compute every EMA line series from the current cached RAW bars. */
   const recomputeEmas = (raw: Kline[]) => {
@@ -814,11 +782,7 @@ export default function Chart({
 
   /** Toggle a single EMA on/off (line series visibility + chip darken). */
   const toggleEma = (period: number) => {
-    if (onToggleEma) {
-      onToggleEma(period);
-      return;
-    }
-    setInternalEmaEnabled((prev) => {
+    setEmaEnabled((prev) => {
       const next = new Set(prev);
       let isNowOn: boolean;
       if (next.has(period)) {
@@ -1769,11 +1733,7 @@ export default function Chart({
           title={`Levels — click to ${levelsEnabled ? "hide" : "show"} all price lines`}
           onClick={(e) => {
             e.stopPropagation();
-            if (onToggleLevels) {
-              onToggleLevels();
-            } else {
-              setInternalLevelsEnabled((prev) => !prev);
-            }
+            setLevelsEnabled((prev) => !prev);
           }}
         >
           Level

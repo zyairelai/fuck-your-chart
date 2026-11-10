@@ -8,7 +8,7 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import cors from "cors";
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync } from "fs";
 
 import { klinesFutures } from "./binance.js";
 
@@ -61,7 +61,7 @@ function isCustomLevelColor(value: unknown): value is "red" | "yellow" | "green"
 const customLevels = loadCustomLevels();
 console.log(`[boot] loaded ${customLevels.length} custom level(s) from ${LEVELS_FILE}`);
 
-// --- Persistent app settings (file-backed) ---
+// --- Persistent line-toggle settings (file-backed) ---
 const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
 
 interface LineToggles {
@@ -72,65 +72,39 @@ interface LineToggles {
   weekend: boolean;
 }
 
-interface AppSettings {
-  lineToggles: LineToggles;
-  levelsEnabled: boolean;
-  emaEnabled: number[];
-}
-
-const DEFAULT_SETTINGS: AppSettings = {
-  lineToggles: {
-    weekly: true,
-    monday: false,
-    pdhlm: true,
-    fibb: false,
-    weekend: false,
-  },
-  levelsEnabled: true,
-  emaEnabled: [10, 20, 50, 200],
+const DEFAULT_LINE_TOGGLES: LineToggles = {
+  weekly: true,
+  monday: false,
+  pdhlm: true,
+  fibb: false,
+  weekend: false,
 };
 
-function parseSettings(v: unknown): AppSettings {
-  if (!v || typeof v !== "object") return { ...DEFAULT_SETTINGS };
+function isLineToggles(v: unknown): v is LineToggles {
+  if (!v || typeof v !== "object") return false;
   const o = v as Record<string, unknown>;
-  const rawToggles = (o.lineToggles && typeof o.lineToggles === "object")
-    ? (o.lineToggles as Record<string, unknown>)
-    : o;
-
-  const lineToggles: LineToggles = {
-    weekly: typeof rawToggles.weekly === "boolean" ? rawToggles.weekly : DEFAULT_SETTINGS.lineToggles.weekly,
-    monday: typeof rawToggles.monday === "boolean" ? rawToggles.monday : DEFAULT_SETTINGS.lineToggles.monday,
-    pdhlm: typeof rawToggles.pdhlm === "boolean" ? rawToggles.pdhlm : DEFAULT_SETTINGS.lineToggles.pdhlm,
-    fibb: typeof rawToggles.fibb === "boolean" ? rawToggles.fibb : DEFAULT_SETTINGS.lineToggles.fibb,
-    weekend: typeof rawToggles.weekend === "boolean" ? rawToggles.weekend : DEFAULT_SETTINGS.lineToggles.weekend,
-  };
-
-  const levelsEnabled = typeof o.levelsEnabled === "boolean" ? o.levelsEnabled : DEFAULT_SETTINGS.levelsEnabled;
-
-  let emaEnabled = DEFAULT_SETTINGS.emaEnabled;
-  if (Array.isArray(o.emaEnabled)) {
-    const filtered = o.emaEnabled.filter((n): n is number => typeof n === "number" && Number.isFinite(n));
-    if (filtered.length >= 0) emaEnabled = filtered;
-  }
-
-  return { lineToggles, levelsEnabled, emaEnabled };
+  return (
+    typeof o.weekly === "boolean" &&
+    typeof o.monday === "boolean" &&
+    typeof o.pdhlm === "boolean" &&
+    typeof o.fibb === "boolean" &&
+    typeof o.weekend === "boolean"
+  );
 }
 
-function loadSettings(): AppSettings {
+function loadSettings(): LineToggles {
   try {
     mkdirSync(DATA_DIR, { recursive: true });
-    if (existsSync(SETTINGS_FILE)) {
-      const raw = readFileSync(SETTINGS_FILE, "utf8");
-      const parsed: unknown = JSON.parse(raw);
-      return parseSettings(parsed);
-    }
+    const raw = readFileSync(SETTINGS_FILE, "utf8");
+    const parsed: unknown = JSON.parse(raw);
+    if (isLineToggles(parsed)) return parsed;
   } catch {
     // File missing or corrupt — start fresh
   }
-  return { ...DEFAULT_SETTINGS };
+  return { ...DEFAULT_LINE_TOGGLES };
 }
 
-function saveSettings(s: AppSettings) {
+function saveSettings(s: LineToggles) {
   try {
     mkdirSync(DATA_DIR, { recursive: true });
     writeFileSync(SETTINGS_FILE, JSON.stringify(s, null, 2), "utf8");
@@ -139,7 +113,7 @@ function saveSettings(s: AppSettings) {
   }
 }
 
-let settings = loadSettings();
+let lineToggles = loadSettings();
 
 const app = express();
 app.use(cors());
@@ -154,49 +128,20 @@ app.get("/api/status", (_req, res) => {
   });
 });
 
-// --- Settings (line toggles, levels, emas) ---
+// --- Settings (line toggles) ---
 app.get("/api/settings", (_req, res) => {
-  settings = loadSettings();
-  res.json({
-    settings,
-    lineToggles: settings.lineToggles,
-    levelsEnabled: settings.levelsEnabled,
-    emaEnabled: settings.emaEnabled,
-  });
+  res.json({ lineToggles });
 });
 
 app.put("/api/settings", (req, res) => {
   const body: unknown = req.body;
-  if (!body || typeof body !== "object") {
-    res.status(400).json({ error: "body must be an object" });
+  if (!isLineToggles(body)) {
+    res.status(400).json({ error: "body must be a valid LineToggles object" });
     return;
   }
-  const o = body as Record<string, unknown>;
-  const mergedLineToggles = {
-    ...settings.lineToggles,
-    ...((o.lineToggles && typeof o.lineToggles === "object") ? (o.lineToggles as Record<string, boolean>) : {}),
-  };
-  for (const k of ["weekly", "monday", "pdhlm", "fibb", "weekend"] as const) {
-    if (typeof o[k] === "boolean") {
-      mergedLineToggles[k] = o[k] as boolean;
-    }
-  }
-
-  settings = {
-    lineToggles: mergedLineToggles,
-    levelsEnabled: typeof o.levelsEnabled === "boolean" ? o.levelsEnabled : settings.levelsEnabled,
-    emaEnabled: Array.isArray(o.emaEnabled)
-      ? o.emaEnabled.filter((n): n is number => typeof n === "number")
-      : settings.emaEnabled,
-  };
-
-  saveSettings(settings);
-  res.json({
-    settings,
-    lineToggles: settings.lineToggles,
-    levelsEnabled: settings.levelsEnabled,
-    emaEnabled: settings.emaEnabled,
-  });
+  lineToggles = { ...body };
+  saveSettings(lineToggles);
+  res.json({ lineToggles });
 });
 
 app.get("/api/custom-levels", (_req, res) => {
