@@ -444,7 +444,7 @@ export default function Page() {
             emas={ALL_EMAS}
             allowFootprint={false}
             defaultFootprintEnabled={false}
-            defaultLevelsEnabled={false}
+            defaultLevelsEnabled={true}
             tz={tz}
             zones={zones}
             lineToggles={toggles}
