@@ -943,6 +943,12 @@ export default function Chart({
     displayCacheRef.current = series;
     rebuildHoverData(merged, series);
 
+    // Always update tab title even when tab is hidden — document.title works in background tabs
+    if (!heikin && series.length > 0) {
+      const lastBar = series[series.length - 1]!;
+      setTabTitle(lastBar.close, symbol);
+    }
+
     if (!tabHiddenRef.current) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       candleRef.current.setData(series as any);
@@ -961,7 +967,6 @@ export default function Chart({
         const lastBar = series[series.length - 1]!;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         futureRef.current?.setData(futureWhitespace(lastBar.time, interval) as any);
-        if (!heikin) setTabTitle(lastBar.close, symbol);
       }
       paintLatestOhlc();
       updateClosePriceLine();
