@@ -1642,9 +1642,9 @@ export default function Chart({
     const scheduleNextPoll = () => {
       if (cancelled) return;
       const now = Date.now();
-      const intervalMs = 3000;
+      const intervalMs = 2000;
       const remainder = now % intervalMs;
-      // Wait until next 3-second mark (:00, :03, :06, ..., :57) + 50ms buffer
+      // Wait until next 2-second mark (:00, :02, :04, ..., :58) + 50ms buffer
       const delay = (intervalMs - remainder) + 50;
       pollTimer = setTimeout(async () => {
         await pollLatest();
