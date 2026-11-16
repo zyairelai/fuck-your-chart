@@ -13,6 +13,8 @@ import {
   type ISeriesApi,
   type IPriceScaleApi,
   type ITimeScaleApi,
+  type ISeriesPrimitive,
+  type SeriesAttachedParameter,
   type Time,
 } from "lightweight-charts";
 import {
@@ -24,6 +26,79 @@ import {
   type Kline,
 } from "../lib/historyStore";
 
+// ---------------------------------------------------------------------------
+// DailyOpenPrimitive — draws a vertical dotted line at every UTC 00:00 boundary
+// visible on the chart (= 08:00 UTC+8 = new daily candle open).
+// Attached to the candlestick series via series.attachPrimitive().
+// ---------------------------------------------------------------------------
+import type { CanvasRenderingTarget2D } from "fancy-canvas";
+
+class DailyOpenPrimitive implements ISeriesPrimitive<Time> {
+  private _params: SeriesAttachedParameter<Time> | null = null;
+
+  attached(params: SeriesAttachedParameter<Time>) {
+    this._params = params;
+  }
+  detached() {
+    this._params = null;
+  }
+
+  paneViews() {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const self = this;
+    return [
+      {
+        renderer() {
+          return {
+            draw(target: CanvasRenderingTarget2D) {
+              if (!self._params) return;
+              const chart = self._params.chart as IChartApi;
+              const ts = chart.timeScale();
+
+              target.useMediaCoordinateSpace(({ context: ctx, mediaSize }) => {
+                const { width, height } = mediaSize;
+
+                const timeFrom = ts.coordinateToTime(0);
+                const timeTo = ts.coordinateToTime(width);
+                if (timeFrom == null || timeTo == null) return;
+
+                const fromEpoch = timeFrom as number;
+                const toEpoch = timeTo as number;
+
+                // Walk UTC midnight timestamps visible in this range
+                const DAY_SEC = 86400;
+                let t = Math.floor(fromEpoch / DAY_SEC) * DAY_SEC;
+                if (t < fromEpoch) t += DAY_SEC;
+
+                ctx.save();
+                ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+                ctx.lineWidth = 1;
+                ctx.setLineDash([3, 4]);
+
+                while (t <= toEpoch + DAY_SEC) {
+                  const x = ts.timeToCoordinate(t as Time);
+                  if (x !== null) {
+                    ctx.beginPath();
+                    ctx.moveTo(x, 0);
+                    ctx.lineTo(x, height);
+                    ctx.stroke();
+                  }
+                  t += DAY_SEC;
+                }
+
+                ctx.restore();
+              });
+            },
+          };
+        },
+      },
+    ];
+  }
+}
+
+// Timeframes where we show the daily-open vertical dotted line.
+// Excluded: 4h and above (the axis tick already makes it obvious).
+const SHOW_DAILY_LINE_TF = new Set(["1m", "3m", "5m", "15m", "30m", "1h", "2h"]);
 
 interface HoverData {
   open: string;
@@ -1141,6 +1216,11 @@ export default function Chart({
       priceFormat: symbolPriceFormat,
     });
     candleRef.current = candle;
+
+    // Attach the daily-open vertical dotted line primitive on eligible timeframes
+    if (SHOW_DAILY_LINE_TF.has(interval)) {
+      candle.attachPrimitive(new DailyOpenPrimitive());
+    }
 
     if (footprintEnabledRef.current) createDeltaSeries();
 
