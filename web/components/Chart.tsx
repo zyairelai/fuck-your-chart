@@ -560,8 +560,8 @@ export default function Chart({
   const hoverDataRef = useRef(new Map<number, HoverData>());
 
   // ---- HTF (Higher-Timeframe) EMA state ----
-  // 4 individual toggles: 15m200, 1h200, 4h50, 4h200.
-  type HtfEmaKey = "15m200" | "1h200" | "4h50" | "4h200";
+  // 3 individual toggles: 15m200, 1h200, 4h200.
+  type HtfEmaKey = "15m200" | "1h200" | "4h200";
   type HtfInterval = "15m" | "1h" | "4h";
   interface HtfEmaConfig {
     key: HtfEmaKey;
@@ -573,14 +573,13 @@ export default function Chart({
   const HTF_EMA_CONFIGS: HtfEmaConfig[] = [
     { key: "15m200", interval: "15m", period: 200, color: "#42a5f5", label: "15m 200" },
     { key: "1h200",  interval: "1h",  period: 200, color: "#ab47bc", label: "1h 200"  },
-    { key: "4h50",   interval: "4h",  period: 50,  color: "#26c6da", label: "4h 50"   },
     { key: "4h200",  interval: "4h",  period: 200, color: "#ef5350", label: "4h 200"  },
   ];
   const HTF_INTERVAL_STEP: Record<HtfInterval, number> = { "15m": 900, "1h": 3600, "4h": 14400 };
 
   const makeHtfEnabledDefault = (): Record<HtfEmaKey, boolean> => ({
     "15m200": false, "1h200": false,
-    "4h50": false, "4h200": false,
+    "4h200": false,
   });
   const [htfEnabled, setHtfEnabled] = useState<Record<HtfEmaKey, boolean>>(makeHtfEnabledDefault);
   const htfEnabledRef = useRef(htfEnabled);
