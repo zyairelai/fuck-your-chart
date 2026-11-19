@@ -440,21 +440,51 @@ body {
   left: 8px;
   z-index: 10;
   display: flex;
-  align-items: center;
+  flex-direction: row;
+  align-items: flex-start;
   gap: 10px;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.02em;
-  /* Allow clicks on EMA toggle buttons. */
   pointer-events: auto;
   cursor: default;
 }
 
+/* The symbol label sits in its own column so the controls stack below Level */
 .cell-header .symbol {
   color: #e0e3eb;
   font-weight: 600;
   font-size: 11px;
   white-space: nowrap;
+  line-height: 16px; /* match chip height */
+}
+
+/* Controls column: [Level] + [right sub-col: (EMA·Delta·OHLC) / (HTF row)] */
+.cell-header-controls {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+/* Right sub-column: stacks row1 (EMA chips etc.) above row2 (HTF buttons) */
+.cell-header-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.cell-header-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cell-header-htf-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .cell-header .tf {
@@ -670,14 +700,6 @@ body {
   color: #787b87;
   font-weight: 400;
   margin-right: 3px;
-}
-
-.ohlc-bar .up {
-  color: #08907a;
-}
-
-.ohlc-bar .down {
-  color: #e23442;
 }
 
 /* Global TZ dropdown — fixed to the bottom-right corner of the chart (under price scale) */

@@ -105,8 +105,6 @@ interface HoverData {
   high: string;
   low: string;
   close: string;
-  change: string;
-  changeClass: "up" | "down";
   delta: string;
   deltaColor: string;
 }
@@ -479,6 +477,8 @@ interface Props {
     sync: LinkedCrosshairSync | null,
   ) => void;
   onLinkedCrosshair?: (id: LinkedCrosshairId, time: number | null) => void;
+  /** Enable 1h / 4h higher-timeframe EMA toggles (50 & 200 EMA from those TFs). */
+  allowHtfEma?: boolean;
 }
 
 export default function Chart({
@@ -501,6 +501,7 @@ export default function Chart({
   linkedCrosshairId,
   registerLinkedCrosshair,
   onLinkedCrosshair,
+  allowHtfEma = false,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -552,11 +553,48 @@ export default function Chart({
   const ohlcHighRef = useRef<HTMLSpanElement | null>(null);
   const ohlcLowRef = useRef<HTMLSpanElement | null>(null);
   const ohlcCloseRef = useRef<HTMLSpanElement | null>(null);
-  const ohlcChangeRef = useRef<HTMLSpanElement | null>(null);
+
   const deltaHoverRef = useRef<HTMLDivElement | null>(null);
   const hoverKeyRef = useRef<string | null>(null);
   const deltaHoverKeyRef = useRef<string | null>(null);
   const hoverDataRef = useRef(new Map<number, HoverData>());
+
+  // ---- HTF (Higher-Timeframe) EMA state ----
+  // 4 individual toggles: 15m200, 1h200, 4h50, 4h200.
+  type HtfEmaKey = "15m200" | "1h200" | "4h50" | "4h200";
+  type HtfInterval = "15m" | "1h" | "4h";
+  interface HtfEmaConfig {
+    key: HtfEmaKey;
+    interval: HtfInterval;
+    period: 50 | 200;
+    color: string;
+    label: string;
+  }
+  const HTF_EMA_CONFIGS: HtfEmaConfig[] = [
+    { key: "15m200", interval: "15m", period: 200, color: "#42a5f5", label: "15m 200" },
+    { key: "1h200",  interval: "1h",  period: 200, color: "#ab47bc", label: "1h 200"  },
+    { key: "4h50",   interval: "4h",  period: 50,  color: "#26c6da", label: "4h 50"   },
+    { key: "4h200",  interval: "4h",  period: 200, color: "#ef5350", label: "4h 200"  },
+  ];
+  const HTF_INTERVAL_STEP: Record<HtfInterval, number> = { "15m": 900, "1h": 3600, "4h": 14400 };
+
+  const makeHtfEnabledDefault = (): Record<HtfEmaKey, boolean> => ({
+    "15m200": false, "1h200": false,
+    "4h50": false, "4h200": false,
+  });
+  const [htfEnabled, setHtfEnabled] = useState<Record<HtfEmaKey, boolean>>(makeHtfEnabledDefault);
+  const htfEnabledRef = useRef(htfEnabled);
+  htfEnabledRef.current = htfEnabled;
+  /** One line series per HTF EMA key. */
+  const htfLineRefs = useRef<Partial<Record<HtfEmaKey, ISeriesApi<"Line">>>>({});
+  /** Raw kline cache per HTF interval (shared between keys of same TF). */
+  const htfCacheRef = useRef<Record<HtfInterval, Kline[]>>({ "15m": [], "1h": [], "4h": [] });
+  /** Whether the initial HTF data fetch is in-flight. */
+  const htfLoadingRef = useRef<Record<HtfInterval, boolean>>({ "15m": false, "1h": false, "4h": false });
+  /** Poll timer IDs per HTF interval. */
+  const htfPollTimerRef = useRef<Record<HtfInterval, ReturnType<typeof setTimeout> | null>>({ "15m": null, "1h": null, "4h": null });
+  /** How many individual keys are currently enabled per interval (to know when to stop polling). */
+  const htfIntervalRefCountRef = useRef<Record<HtfInterval, number>>({ "15m": 0, "1h": 0, "4h": 0 });
 
   const updateZoneLabelVisibility = () => {
     const pane = chartRef.current?.panes()[0]?.getHTMLElement();
@@ -634,10 +672,6 @@ export default function Chart({
     if (ohlcHighRef.current) ohlcHighRef.current.textContent = data.high;
     if (ohlcLowRef.current) ohlcLowRef.current.textContent = data.low;
     if (ohlcCloseRef.current) ohlcCloseRef.current.textContent = data.close;
-    if (ohlcChangeRef.current) {
-      ohlcChangeRef.current.textContent = data.change;
-      ohlcChangeRef.current.className = data.changeClass;
-    }
   };
 
   const paintLatestOhlc = () => {
@@ -688,17 +722,12 @@ export default function Chart({
     const bar = displayed[index];
     const rawBar = raw[index];
     if (!bar || !rawBar) return;
-    const previous = index > 0 ? displayed[index - 1]! : null;
-    const baseline = previous ? previous.close : bar.open;
-    const change = ((bar.close - baseline) / (baseline || 1)) * 100;
     const delta = candleDelta(rawBar);
     const data: HoverData = {
       open: fmt(bar.open),
       high: fmt(bar.high),
       low: fmt(bar.low),
       close: fmt(bar.close),
-      change: `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`,
-      changeClass: change >= 0 ? "up" : "down",
       delta: String(Math.trunc(delta)),
       deltaColor: delta >= 0 ? "#08907a" : "#e23442",
     };
@@ -891,6 +920,140 @@ export default function Chart({
     });
   };
 
+  // ---- HTF EMA helpers ----
+
+  /** Map higher-timeframe EMA values onto the current chart's time axis via step-hold. */
+  const mapHtfEmaToChartTime = (
+    htfBars: Kline[],
+    period: number,
+    chartBars: Kline[],
+    htfStepSec: number,
+  ): { time: Time; value: number }[] => {
+    if (htfBars.length === 0 || chartBars.length === 0) return [];
+    const closes = htfBars.map((b) => b.close);
+    const smoothed = ema(closes, period);
+
+    const htfEmaMap = new Map<number, number>();
+    for (let i = 0; i < htfBars.length; i++) {
+      htfEmaMap.set(htfBars[i]!.time, smoothed[i]!);
+    }
+
+    const result: { time: Time; value: number }[] = [];
+    let currentHtfEma: number | null = null;
+    for (const bar of chartBars) {
+      const htfStart = Math.floor(bar.time / htfStepSec) * htfStepSec;
+      const emaVal = htfEmaMap.get(htfStart);
+      if (emaVal !== undefined) currentHtfEma = emaVal;
+      if (currentHtfEma !== null) result.push({ time: bar.time as Time, value: currentHtfEma });
+    }
+    return result;
+  };
+
+  /** Paint (or clear) a single HTF EMA line. */
+  const paintOneHtfEma = (cfg: HtfEmaConfig) => {
+    const line = htfLineRefs.current[cfg.key];
+    if (!line) return;
+    const htfBars = htfCacheRef.current[cfg.interval];
+    const chartBars = displayCacheRef.current;
+    if (!htfEnabledRef.current[cfg.key] || htfBars.length === 0 || chartBars.length === 0) {
+      line.setData([]);
+      return;
+    }
+    const data = mapHtfEmaToChartTime(htfBars, cfg.period, chartBars, HTF_INTERVAL_STEP[cfg.interval]);
+    line.setData(data);
+  };
+
+  /** Repaint all currently-enabled HTF EMA lines (called when chart data changes). */
+  const repaintAllHtfEmas = () => {
+    if (!allowHtfEma) return;
+    for (const cfg of HTF_EMA_CONFIGS) {
+      if (htfEnabledRef.current[cfg.key]) paintOneHtfEma(cfg);
+    }
+  };
+
+  /** Repaint all enabled lines for a given interval (called after HTF data arrives). */
+  const repaintHtfInterval = (interval: HtfInterval) => {
+    for (const cfg of HTF_EMA_CONFIGS) {
+      if (cfg.interval === interval && htfEnabledRef.current[cfg.key]) paintOneHtfEma(cfg);
+    }
+  };
+
+  /** Stop polling for a HTF interval. */
+  const stopHtfDataFeed = (htfInterval: HtfInterval) => {
+    if (htfPollTimerRef.current[htfInterval] !== null) {
+      clearTimeout(htfPollTimerRef.current[htfInterval]!);
+      htfPollTimerRef.current[htfInterval] = null;
+    }
+  };
+
+  /** Fetch HTF kline data and start a background poll (shared per interval). */
+  const startHtfDataFeed = async (htfInterval: HtfInterval) => {
+    if (htfLoadingRef.current[htfInterval]) return; // already loading; paint will happen when done
+    htfLoadingRef.current[htfInterval] = true;
+    try {
+      const klines = await fetchLatestKlines(htfInterval, 500, symbol);
+      if (klines.length === 0) return;
+      htfCacheRef.current[htfInterval] = cleanAndSort(klines);
+      repaintHtfInterval(htfInterval);
+    } catch (err) {
+      console.warn(`[chart] HTF ${htfInterval} initial fetch failed:`, err);
+    } finally {
+      htfLoadingRef.current[htfInterval] = false;
+    }
+
+    const poll = async () => {
+      if (htfIntervalRefCountRef.current[htfInterval] === 0) return; // all keys off
+      try {
+        const latest = await fetchLatestKlines(htfInterval, 10, symbol);
+        if (latest.length > 0) {
+          const existing = htfCacheRef.current[htfInterval];
+          const map = new Map<number, Kline>();
+          for (const b of existing) map.set(b.time, b);
+          for (const b of latest) map.set(b.time, b);
+          htfCacheRef.current[htfInterval] = cleanAndSort([...map.values()]);
+          repaintHtfInterval(htfInterval);
+        }
+      } catch {}
+      if (htfIntervalRefCountRef.current[htfInterval] > 0) {
+        htfPollTimerRef.current[htfInterval] = setTimeout(poll, 5000);
+      }
+    };
+    htfPollTimerRef.current[htfInterval] = setTimeout(poll, 5000);
+  };
+
+  /** Toggle a single HTF EMA key on/off. */
+  const toggleHtfEma = (key: HtfEmaKey) => {
+    setHtfEnabled((prev) => {
+      const isNowOn = !prev[key];
+      const next = { ...prev, [key]: isNowOn };
+      htfEnabledRef.current = next;
+
+      const cfg = HTF_EMA_CONFIGS.find((c) => c.key === key)!;
+      const line = htfLineRefs.current[key];
+      if (line) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        line.applyOptions({ visible: isNowOn } as any);
+        if (!isNowOn) line.setData([]);
+      }
+
+      // Update ref-count for this interval
+      const delta = isNowOn ? 1 : -1;
+      htfIntervalRefCountRef.current[cfg.interval] = Math.max(0,
+        htfIntervalRefCountRef.current[cfg.interval] + delta,
+      );
+
+      if (isNowOn) {
+        // If we already have cached data paint immediately, then start/keep the feed
+        if (htfCacheRef.current[cfg.interval].length > 0) paintOneHtfEma(cfg);
+        void startHtfDataFeed(cfg.interval);
+      } else {
+        // Stop polling only if no other keys on this interval are still enabled
+        if (htfIntervalRefCountRef.current[cfg.interval] === 0) stopHtfDataFeed(cfg.interval);
+      }
+      return next;
+    });
+  };
+
   /** Full state flush when waking from background tab sleep. */
   const flushFullState = () => {
     const series = displayCacheRef.current;
@@ -913,6 +1076,7 @@ export default function Chart({
     futureRef.current?.setData(futureWhitespace(lastBar.time, interval) as any);
     if (!heikin) setTabTitle(lastBar.close, symbol);
     paintEmas(series);
+    repaintAllHtfEmas();
     paintLatestOhlc();
     updateClosePriceLine();
     if (pinnedToRightRef.current) {
@@ -964,6 +1128,7 @@ export default function Chart({
           }));
         }
         paintEmas(series);
+        repaintAllHtfEmas();
         if (range) {
           ts.setVisibleLogicalRange({
             from: range.from + cut.length,
@@ -1038,6 +1203,7 @@ export default function Chart({
         }));
       }
       paintEmas(series);
+      repaintAllHtfEmas();
       if (series.length > 0) {
         const lastBar = series[series.length - 1]!;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1200,6 +1366,26 @@ export default function Chart({
     };
     for (const period of emas) {
       if (period >= 50) addEma(period);
+    }
+
+    // HTF EMA line series — one per key, all hidden by default, added behind candles.
+    if (allowHtfEma) {
+      for (const cfg of HTF_EMA_CONFIGS) {
+        const line = chart.addSeries(LineSeries, {
+          color: cfg.color,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          lineWidth: (cfg.period === 200 ? 2 : 1.5) as any,
+          lineStyle: LineStyle.Solid,
+          pointMarkersVisible: false,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          priceFormat: symbolPriceFormat,
+          crosshairMarkerVisible: false,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          visible: false as any,
+        });
+        htfLineRefs.current[cfg.key] = line;
+      }
     }
 
     // Candles render above the slow EMAs; fast EMAs are added after candles.
@@ -1548,6 +1734,10 @@ export default function Chart({
       if (linkedCrosshairId) {
         registerLinkedCrosshair?.(linkedCrosshairId, null);
       }
+      // Clean up HTF EMA poll timers
+      for (const htfInterval of ["15m", "1h", "4h"] as HtfInterval[]) {
+        stopHtfDataFeed(htfInterval);
+      }
       chart.remove();
       chartRef.current = null;
       rightScaleRef.current = null;
@@ -1806,44 +1996,72 @@ export default function Chart({
 
   return (
     <>
-      {/* Header — timeframe + level + EMA + foot + OHLC. */}
+      {/* Header: [symbol] [Level] [right-col: (EMA·Delta·OHLC) / (HTF row)] */}
       <div className="cell-header">
         <span className="symbol">
           {symbol} · {formatTfLabel(interval)} · Binance{heikin ? " · Heikin Ashi" : ""}
         </span>
-        <button
-          type="button"
-          className={`level-chip${levelsEnabled ? " active" : " off"}`}
-          aria-pressed={levelsEnabled}
-          title={`Levels — click to ${levelsEnabled ? "hide" : "show"} all price lines`}
-          onClick={(e) => {
-            e.stopPropagation();
-            setLevelsEnabled((prev) => !prev);
-          }}
-        >
-          Level
-        </button>
-        <div className="ema-group">{emaLegend}</div>
-        {allowFootprint && (
+        <div className="cell-header-controls">
+          {/* Level sits alone so it stays vertically centred regardless of whether row2 exists */}
           <button
             type="button"
-            className={`footprint-chip${footprintEnabled ? " active" : " off"}`}
-            aria-pressed={footprintEnabled}
-            title={`Footprint delta — click to ${footprintEnabled ? "hide" : "show"}`}
+            className={`level-chip${levelsEnabled ? " active" : " off"}`}
+            aria-pressed={levelsEnabled}
+            title={`Levels — click to ${levelsEnabled ? "hide" : "show"} all price lines`}
             onClick={(e) => {
               e.stopPropagation();
-              toggleFootprint();
+              setLevelsEnabled((prev) => !prev);
             }}
           >
-            Delta
+            Level
           </button>
-        )}
-        <div className="ohlc-bar">
-          <span><b>O</b> <span ref={ohlcOpenRef} /></span>
-          <span><b>H</b> <span ref={ohlcHighRef} /></span>
-          <span><b>L</b> <span ref={ohlcLowRef} /></span>
-          <span><b>C</b> <span ref={ohlcCloseRef} /></span>
-          <span ref={ohlcChangeRef} />
+          {/* Right sub-column: row1 (EMA chips · Delta · OHLC) + row2 (HTF, aligns under "10") */}
+          <div className="cell-header-right">
+            <div className="cell-header-row">
+              <div className="ema-group">{emaLegend}</div>
+              {allowFootprint && (
+                <button
+                  type="button"
+                  className={`footprint-chip${footprintEnabled ? " active" : " off"}`}
+                  aria-pressed={footprintEnabled}
+                  title={`Footprint delta — click to ${footprintEnabled ? "hide" : "show"}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleFootprint();
+                  }}
+                >
+                  Delta
+                </button>
+              )}
+              <div className="ohlc-bar">
+                <span><b>O</b> <span ref={ohlcOpenRef} /></span>
+                <span><b>H</b> <span ref={ohlcHighRef} /></span>
+                <span><b>L</b> <span ref={ohlcLowRef} /></span>
+                <span><b>C</b> <span ref={ohlcCloseRef} /></span>
+              </div>
+            </div>
+            {/* HTF row — aligns under "10" because it shares the right sub-column */}
+            {allowHtfEma && (
+              <div className="cell-header-htf-row">
+                {HTF_EMA_CONFIGS.map((cfg) => (
+                  <button
+                    key={cfg.key}
+                    type="button"
+                    className={`footprint-chip${htfEnabled[cfg.key] ? " active" : " off"}`}
+                    aria-pressed={htfEnabled[cfg.key]}
+                    title={`${cfg.label} EMA — click to ${htfEnabled[cfg.key] ? "hide" : "show"}`}
+                    style={htfEnabled[cfg.key] ? { background: cfg.color, borderColor: cfg.color, color: "#0b0e13" } : undefined}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleHtfEma(cfg.key);
+                    }}
+                  >
+                    {cfg.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

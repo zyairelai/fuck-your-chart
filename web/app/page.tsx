@@ -398,6 +398,7 @@ export default function Page() {
             emas={ALL_EMAS}
             allowFootprint={true}
             defaultFootprintEnabled={true}
+            allowHtfEma={true}
             defaultLevelsEnabled={true}
             tz={tz}
             zones={zones}
