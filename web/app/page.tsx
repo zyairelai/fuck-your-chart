@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ITimeScaleApi, Time } from "lightweight-charts";
 import Chart from "../components/Chart";
 import TopBar from "../components/TopBar";
-import type { TzOffset, Zones, LineToggles, CustomLevel, LinkedCrosshairId, LinkedCrosshairSync } from "../components/Chart";
+import type { TzOffset, Zones, LineToggles, CustomLevel, CustomLevelColor, LinkedCrosshairId, LinkedCrosshairSync } from "../components/Chart";
 import { fetchZones } from "../lib/zones";
 import { play5mCloseAlert, playTestChirp, getAudioContext } from "../lib/audioAlert";
 
@@ -225,6 +225,64 @@ export default function Page() {
     setCustomLevelsError(null);
   }, []);
 
+  const onEditCustomLevel = useCallback(async (oldPrice: number, newPrice: number) => {
+    const roundedOld = Math.round(oldPrice * 2) / 2;
+    const roundedNew = Math.round(newPrice * 2) / 2;
+    let targetColor: CustomLevelColor = "yellow";
+
+    // 1. Optimistically update local state immediately so line moves instantly
+    setCustomLevels((prev) => {
+      const match = prev.find((l) => Math.abs(Math.round(l.price * 2) / 2 - roundedOld) < 0.01);
+      if (match) targetColor = match.color;
+      const next = prev.map((l) =>
+        Math.abs(Math.round(l.price * 2) / 2 - roundedOld) < 0.01
+          ? { ...l, price: roundedNew }
+          : l
+      );
+      setLocalCustomLevels(next);
+      return next;
+    });
+
+    // 2. Persist to server (try PUT, fallback to DELETE + POST for backward compatibility)
+    try {
+      const res = await fetch("/api/custom-levels", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ oldPrice, newPrice }),
+      });
+      if (res.ok) {
+        const result = (await res.json()) as { customLevels: CustomLevel[] };
+        setCustomLevels((prev) => {
+          if (areLevelsEqual(prev, result.customLevels)) return prev;
+          setLocalCustomLevels(result.customLevels);
+          return result.customLevels;
+        });
+        setCustomLevelsError(null);
+        return;
+      }
+
+      // If PUT is not supported (e.g. 404 or 405 on existing server container), do DELETE + POST
+      await fetch(`/api/custom-levels?price=${encodeURIComponent(oldPrice)}`, { method: "DELETE" });
+      const postRes = await fetch("/api/custom-levels", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ price: newPrice, color: targetColor }),
+      });
+      if (postRes.ok) {
+        const result = (await postRes.json()) as { customLevels: CustomLevel[] };
+        setCustomLevels((prev) => {
+          if (areLevelsEqual(prev, result.customLevels)) return prev;
+          setLocalCustomLevels(result.customLevels);
+          return result.customLevels;
+        });
+        setCustomLevelsError(null);
+        return;
+      }
+    } catch {
+      // Offline / standalone fallback
+    }
+  }, []);
+
   const onDeleteCustomLevel = useCallback(async (price: number) => {
     try {
       const res = await fetch(`/api/custom-levels?price=${encodeURIComponent(price)}`, {
@@ -405,6 +463,7 @@ export default function Page() {
             lineToggles={toggles}
             customLevels={customLevels}
             onDeleteCustomLevel={onDeleteCustomLevel}
+            onEditCustomLevel={onEditCustomLevel}
             onChartDoubleClick={toggleLayout}
             registerTimeScale={isSynchronized ? registerLinkedTime : undefined}
             siblingScales={isSynchronized ? linkedTimeScales : undefined}
@@ -428,6 +487,7 @@ export default function Page() {
             lineToggles={toggles}
             customLevels={customLevels}
             onDeleteCustomLevel={onDeleteCustomLevel}
+            onEditCustomLevel={onEditCustomLevel}
             onChartDoubleClick={toggleLayout}
             registerTimeScale={isSynchronized ? registerLinkedTime : undefined}
             siblingScales={isSynchronized ? linkedTimeScales : undefined}
@@ -451,6 +511,7 @@ export default function Page() {
             lineToggles={toggles}
             customLevels={customLevels}
             onDeleteCustomLevel={onDeleteCustomLevel}
+            onEditCustomLevel={onEditCustomLevel}
             onChartDoubleClick={toggleLayout}
           />
         </div>

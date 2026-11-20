@@ -172,6 +172,32 @@ app.post("/api/custom-levels", (req, res) => {
   res.status(201).json({ customLevels });
 });
 
+app.put("/api/custom-levels", (req, res) => {
+  const body: unknown = req.body;
+  if (!body || typeof body !== "object") {
+    res.status(400).json({ error: "oldPrice and newPrice are required" });
+    return;
+  }
+  const { oldPrice, newPrice } = body as { oldPrice?: unknown; newPrice?: unknown };
+  if (
+    typeof oldPrice !== "number" || !Number.isFinite(oldPrice) ||
+    typeof newPrice !== "number" || !Number.isFinite(newPrice) || newPrice <= 0
+  ) {
+    res.status(400).json({ error: "oldPrice and newPrice must be valid numbers" });
+    return;
+  }
+  const roundedOld = Math.round(oldPrice * 2) / 2;
+  const roundedNew = Math.round(newPrice * 2) / 2;
+  const index = customLevels.findIndex(
+    (l) => Math.abs(Math.round(l.price * 2) / 2 - roundedOld) < 0.01
+  );
+  if (index >= 0 && customLevels[index]) {
+    customLevels[index]!.price = roundedNew;
+    saveCustomLevels(customLevels);
+  }
+  res.json({ customLevels });
+});
+
 app.delete("/api/custom-levels", (req, res) => {
   const queryPrice = req.query.price != null ? Number(req.query.price) : undefined;
   const bodyPrice = req.body && typeof req.body === "object" && "price" in req.body

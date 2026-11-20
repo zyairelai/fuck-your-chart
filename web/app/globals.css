@@ -784,6 +784,60 @@ body {
   flex-shrink: 0;
 }
 
+.context-menu-edit-form {
+  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #d1d4dc;
+}
+
+.context-menu-edit-form svg {
+  flex-shrink: 0;
+}
+
+.context-menu-input {
+  background: #141823;
+  border: 1px solid #363c4e;
+  border-radius: 4px;
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 8px;
+  width: 90px;
+  outline: none;
+  transition: border-color 0.15s;
+  -moz-appearance: textfield;
+}
+
+.context-menu-input::-webkit-outer-spin-button,
+.context-menu-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.context-menu-input:focus {
+  border-color: #2962ff;
+}
+
+.context-menu-save-btn {
+  background: #2962ff;
+  border: none;
+  border-radius: 4px;
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 9px;
+  cursor: pointer;
+  transition: filter 0.15s, background-color 0.15s;
+}
+
+.context-menu-save-btn:hover {
+  filter: brightness(1.15);
+}
+
 /* Top-bar TZ group: a small "TZ" label + the same tf-pill group. */
 .tz-group {
   display: flex;

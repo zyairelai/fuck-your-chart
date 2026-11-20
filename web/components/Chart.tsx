@@ -199,6 +199,10 @@ const TARGET_BAR_SPACING = 6;
 /** Tiny extra pad after the last *future* whitespace bar. */
 const RIGHT_GAP_BARS = 2;
 
+function getTargetBarSpacing(interval: string): number {
+  return interval === "3m" ? 3.5 : TARGET_BAR_SPACING;
+}
+
 const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const DAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -468,6 +472,7 @@ interface Props {
   lineToggles?: LineToggles;
   customLevels?: CustomLevel[];
   onDeleteCustomLevel?: (price: number) => void;
+  onEditCustomLevel?: (oldPrice: number, newPrice: number) => void;
   onChartDoubleClick?: () => void;
   registerTimeScale?: (api: ITimeScaleApi<Time> | null) => void;
   siblingScales?: React.MutableRefObject<ITimeScaleApi<Time>[]>;
@@ -495,6 +500,7 @@ export default function Chart({
   lineToggles = { weekly: true, monday: false, pdhlm: true, fibb: false, weekend: false },
   customLevels = [],
   onDeleteCustomLevel,
+  onEditCustomLevel,
   onChartDoubleClick,
   registerTimeScale,
   siblingScales,
@@ -631,6 +637,8 @@ export default function Chart({
     y: number;
     customLevel?: CustomLevel | null;
   } | null>(null);
+  const [editingLevel, setEditingLevel] = useState(false);
+  const [editPriceInput, setEditPriceInput] = useState("");
 
   /** Currently-selected display timezone — comes from the top bar. */
 
@@ -1241,14 +1249,15 @@ export default function Chart({
     pinnedToRightRef.current = true;
     rightScaleRef.current?.setAutoScale(true);
     const ts = c.timeScale();
+    const spacing = getTargetBarSpacing(interval);
     ts.applyOptions({
-      barSpacing: TARGET_BAR_SPACING,
+      barSpacing: spacing,
       rightOffset: RIGHT_GAP_BARS,
     });
     // Pin the live candle near the right. Do NOT scrollToRealTime() — that
     // would jump to the dummy future series (~4h of empty).
     const total = cacheRef.current.length;
-    const slots = Math.max(40, Math.floor((w - 70) / TARGET_BAR_SPACING));
+    const slots = Math.max(40, Math.floor((w - 70) / spacing));
     const futureSlots = Math.min(
       futureBarCount(interval),
       Math.max(4, Math.floor(slots * 0.12)),
@@ -1314,7 +1323,7 @@ export default function Chart({
         // shift sideways visually). HH:MM resolution is plenty.
         secondsVisible: false,
         rightOffset: RIGHT_GAP_BARS,
-        barSpacing: TARGET_BAR_SPACING,
+        barSpacing: getTargetBarSpacing(interval),
         // Keep the left edge free so a 0-width mount → real size doesn't pin
         // the first bar to the left and leave a huge empty gap on the right.
         fixLeftEdge: false,
@@ -1667,6 +1676,7 @@ export default function Chart({
         }
       }
 
+      setEditingLevel(false);
       setContextMenu({
         x: e.clientX,
         y: e.clientY,
@@ -2106,28 +2116,103 @@ export default function Chart({
             Reset Price Scale
           </button>
           {contextMenu.customLevel && (
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                const price = contextMenu.customLevel!.price;
-                setContextMenu(null);
-                onDeleteCustomLevel?.(price);
-              }}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="3 6 5 6 21 6" />
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                <line x1="10" y1="11" x2="10" y2="17" />
-                <line x1="14" y1="11" x2="14" y2="17" />
-              </svg>
-              Remove this line
-            </button>
+            <>
+              {editingLevel ? (
+                <div
+                  className="context-menu-edit-form"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                    <path d="m15 5 4 4" />
+                  </svg>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    autoFocus
+                    className="context-menu-input"
+                    value={editPriceInput}
+                    onChange={(e) => setEditPriceInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const val = parseFloat(editPriceInput.replace(/,/g, "").trim());
+                        if (Number.isFinite(val) && val > 0 && contextMenu.customLevel) {
+                          onEditCustomLevel?.(contextMenu.customLevel.price, val);
+                        }
+                        setContextMenu(null);
+                        setEditingLevel(false);
+                      } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setEditingLevel(false);
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="context-menu-save-btn"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const val = parseFloat(editPriceInput.replace(/,/g, "").trim());
+                      if (Number.isFinite(val) && val > 0 && contextMenu.customLevel) {
+                        onEditCustomLevel?.(contextMenu.customLevel.price, val);
+                      }
+                      setContextMenu(null);
+                      setEditingLevel(false);
+                    }}
+                  >
+                    Save
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="context-menu-item"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setEditPriceInput(String(contextMenu.customLevel!.price));
+                    setEditingLevel(true);
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                    <path d="m15 5 4 4" />
+                  </svg>
+                  Edit Price level
+                </button>
+              )}
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  const price = contextMenu.customLevel!.price;
+                  setContextMenu(null);
+                  setEditingLevel(false);
+                  onDeleteCustomLevel?.(price);
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                  <line x1="10" y1="11" x2="10" y2="17" />
+                  <line x1="14" y1="11" x2="14" y2="17" />
+                </svg>
+                Remove this line
+              </button>
+            </>
           )}
         </div>
       )}
 
       {/* Dismiss the context menu on any global click. */}
-      <ContextMenuDismiss onAnyClick={() => setContextMenu(null)} />
+      <ContextMenuDismiss
+        onAnyClick={() => {
+          setContextMenu(null);
+          setEditingLevel(false);
+        }}
+      />
     </>
   );
 }
