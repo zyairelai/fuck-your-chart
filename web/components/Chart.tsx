@@ -193,9 +193,9 @@ const EMA_LINE_WIDTH: Record<number, number> = {
   200: 2.5,
 };
 
-/** Default zoom: ~9px per bar so candles stay readable (CoinGlass-like).
+/** Default zoom: ~6px per bar so candles stay readable with a wider view.
  *  Visible bar count then follows pane width instead of stuffing 500 bars in. */
-const TARGET_BAR_SPACING = 9;
+const TARGET_BAR_SPACING = 6;
 /** Tiny extra pad after the last *future* whitespace bar. */
 const RIGHT_GAP_BARS = 2;
 
@@ -268,7 +268,7 @@ function futureWhitespace(lastTime: number, interval: string): { time: Time }[] 
 
 /** Default zoom — matched to CoinGlass: fat, readable candles with the
  *  latest bar near the right edge. Reset uses the same numbers. */
-const DEFAULT_BAR_SPACING = 9;
+const DEFAULT_BAR_SPACING = 6;
 const DEFAULT_RIGHT_OFFSET = 6;
 
 /** Darken an `#rrggbb` colour by mixing it with the dark cell background. */
@@ -1251,7 +1251,7 @@ export default function Chart({
     const slots = Math.max(40, Math.floor((w - 70) / TARGET_BAR_SPACING));
     const futureSlots = Math.min(
       futureBarCount(interval),
-      Math.max(4, Math.floor(slots * 0.2)),
+      Math.max(4, Math.floor(slots * 0.12)),
     );
     const range = {
       from: Math.max(0, total - (slots - futureSlots)),
