@@ -233,15 +233,9 @@ function futureBarCount(interval: string): number {
   return 1500;                  // 1500 bars for 1m, 3m, 5m, 15m
 }
 
-/** Snap level prices to 0.0 / 0.5 / 1.0 (0.45 → 0.5). */
-function roundPrice(n: number, symbol = "BTCUSDT"): number {
-  if (symbol.toUpperCase() === "BTCUSDT") {
-    return Math.round(n * 2) / 2;
-  }
-  if (symbol.toUpperCase() === "HYPEUSDT") {
-    return Math.round(n * 1000) / 1000;
-  }
-  return Math.round(n * 100) / 100;
+/** Snap level prices to 0.0 / 0.5 / 1.0 (0.45 → 0.5) for BTCUSDT. */
+function roundPrice(n: number): number {
+  return Math.round(n * 2) / 2;
 }
 
 function formatCountdown(interval: string, barTime: number): string {
@@ -312,7 +306,7 @@ function fmtCrosshairTime(t: Time, tz: TzOffset): string {
   return `${dow} ${day} ${mon} '${yr} ${fmtTime(epoch, tz)}`;
 }
 
-function makeLocalization(tz: TzOffset, symbol = "BTCUSDT") {
+function makeLocalization(tz: TzOffset) {
   let lastEpoch: number | null = null;
   let lastFormattedTime = "";
   return {
@@ -324,52 +318,24 @@ function makeLocalization(tz: TzOffset, symbol = "BTCUSDT") {
       }
       return lastFormattedTime;
     },
-    priceFormatter: (p: number) => formatPrice(p, symbol),
+    priceFormatter: (p: number) => formatPrice(p),
   };
 }
 
-function getPricePrecision(symbol: string): number {
-  switch (symbol.toUpperCase()) {
-    case "BTCUSDT":
-      return 0;
-    case "HYPEUSDT":
-      return 3;
-    case "ETHUSDT":
-    case "SOLUSDT":
-    case "XAUUSDT":
-    default:
-      return 2;
-  }
+function getMinMove(): number {
+  return 1;
 }
 
-function getMinMove(symbol: string): number {
-  switch (symbol.toUpperCase()) {
-    case "BTCUSDT":
-      return 1;
-    case "HYPEUSDT":
-      return 0.001;
-    case "ETHUSDT":
-    case "SOLUSDT":
-    case "XAUUSDT":
-    default:
-      return 0.01;
-  }
+function formatPrice(price: number): string {
+  return String(Math.round(price));
 }
 
-function formatPrice(price: number, symbol = "BTCUSDT"): string {
-  const precision = getPricePrecision(symbol);
-  if (precision === 0) return String(Math.round(price));
-  return price.toFixed(precision);
-}
-
-function setTabTitle(price: number, symbol = "BTCUSDT") {
-  const precision = getPricePrecision(symbol);
+function setTabTitle(price: number) {
   const s = price.toLocaleString("en-US", {
-    minimumFractionDigits: Math.max(1, precision),
-    maximumFractionDigits: Math.max(1, precision),
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
   });
-  const cleanName = symbol.replace(/USDT$/i, "");
-  document.title = `$${s} ${cleanName} fuck-your-chart`;
+  document.title = `$${s} BTC fuck-your-chart`;
 }
 
 function copyToLegacyClipboard(text: string): boolean {
@@ -484,6 +450,7 @@ interface Props {
   onLinkedCrosshair?: (id: LinkedCrosshairId, time: number | null) => void;
   /** Enable 1h / 4h higher-timeframe EMA toggles (50 & 200 EMA from those TFs). */
   allowHtfEma?: boolean;
+  onRegisterScreenshot?: (getScreenshot: (() => HTMLCanvasElement | null) | null) => void;
 }
 
 export default function Chart({
@@ -508,9 +475,12 @@ export default function Chart({
   registerLinkedCrosshair,
   onLinkedCrosshair,
   allowHtfEma = false,
+  onRegisterScreenshot,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const onRegisterScreenshotRef = useRef(onRegisterScreenshot);
+  onRegisterScreenshotRef.current = onRegisterScreenshot;
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const deltaRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   /** Invisible future timestamps so the axis labels 16:00→20:00 without
@@ -1081,7 +1051,7 @@ export default function Chart({
     const lastBar = series[series.length - 1]!;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     futureRef.current?.setData(futureWhitespace(lastBar.time, interval) as any);
-    if (!heikin) setTabTitle(lastBar.close, symbol);
+    if (!heikin) setTabTitle(lastBar.close);
     paintEmas(series);
     repaintAllHtfEmas();
     paintLatestOhlc();
@@ -1193,7 +1163,7 @@ export default function Chart({
     // Always update tab title even when tab is hidden — document.title works in background tabs
     if (!heikin && series.length > 0) {
       const lastBar = series[series.length - 1]!;
-      setTabTitle(lastBar.close, symbol);
+      setTabTitle(lastBar.close);
     }
 
     if (!tabHiddenRef.current) {
@@ -1309,7 +1279,7 @@ export default function Chart({
         vertLine: { color: "#8b8f98", width: 1, style: LineStyle.Dashed, labelBackgroundColor: "#333842" },
         horzLine: { color: "#8b8f98", width: 1, style: LineStyle.Dashed, labelBackgroundColor: "#333842" },
       },
-      localization: makeLocalization(tz, symbol),
+      localization: makeLocalization(tz),
       rightPriceScale: {
         borderColor: "#2a2e39",
         autoScale: true,
@@ -1346,10 +1316,21 @@ export default function Chart({
     chartRef.current = chart;
     setChartReady(true);
 
+    if (onRegisterScreenshotRef.current) {
+      onRegisterScreenshotRef.current(() => {
+        if (!chartRef.current) return null;
+        try {
+          return chartRef.current.takeScreenshot(true, false);
+        } catch {
+          return null;
+        }
+      });
+    }
+
     const symbolPriceFormat = {
       type: "custom" as const,
-      minMove: getMinMove(symbol),
-      formatter: (p: number) => formatPrice(p, symbol),
+      minMove: getMinMove(),
+      formatter: (p: number) => formatPrice(p),
     };
 
     // Default right price scale (used by every series on this chart).
@@ -1457,7 +1438,7 @@ export default function Chart({
       const lastBar = series[series.length - 1]!;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       futureRef.current?.setData(futureWhitespace(lastBar.time, interval) as any);
-      if (!heikin) setTabTitle(lastBar.close, symbol);
+      if (!heikin) setTabTitle(lastBar.close);
       recomputeEmas(savedBars);
       paintLatestOhlc();
       updateClosePriceLine();
@@ -1644,7 +1625,7 @@ export default function Chart({
         let closestCustomLevel: CustomLevel | null = null;
         let minCustomDiff = Infinity;
         for (const level of levels) {
-          const lineY = series.priceToCoordinate(roundPrice(level.price, symbol));
+          const lineY = series.priceToCoordinate(roundPrice(level.price));
           if (lineY == null) continue;
           const diff = Math.abs(lineY - y);
           if (diff < minCustomDiff) {
@@ -1747,6 +1728,9 @@ export default function Chart({
       for (const htfInterval of ["15m", "1h", "4h"] as HtfInterval[]) {
         stopHtfDataFeed(htfInterval);
       }
+      if (onRegisterScreenshotRef.current) {
+        onRegisterScreenshotRef.current(null);
+      }
       chart.remove();
       chartRef.current = null;
       rightScaleRef.current = null;
@@ -1756,6 +1740,19 @@ export default function Chart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (onRegisterScreenshot) {
+      onRegisterScreenshot(() => {
+        if (!chartRef.current) return null;
+        try {
+          return chartRef.current.takeScreenshot(true, false);
+        } catch {
+          return null;
+        }
+      });
+    }
+  }, [onRegisterScreenshot]);
+
   // Re-apply tick formatter when the timezone changes.
   // Do NOT call resetTimeScale() here — that would wipe the user's current
   // pan/zoom position every time they switch TZ.
@@ -1763,7 +1760,7 @@ export default function Chart({
     if (!chartRef.current) return;
     chartRef.current.applyOptions({
       timeScale: { tickMarkFormatter: makeTickFormatter(tz) },
-      localization: makeLocalization(tz, symbol),
+      localization: makeLocalization(tz),
     });
   }, [tz, symbol]);
 
@@ -1787,7 +1784,7 @@ export default function Chart({
       style: LineStyle,
       title: string,
     ) => {
-      const roundedPrice = roundPrice(price, symbol);
+      const roundedPrice = roundPrice(price);
       const line = series.createPriceLine({
         price: roundedPrice,
         color,
@@ -1828,7 +1825,7 @@ export default function Chart({
     for (let i = 0; i < customLevels.length; i++) {
       const level = customLevels[i]!;
       const color = CUSTOM_LEVEL_COLORS[level.color] ?? "#f8ea3b";
-      const roundedPrice = roundPrice(level.price, symbol);
+      const roundedPrice = roundPrice(level.price);
       const line = series.createPriceLine({
         price: roundedPrice,
         color,
@@ -1888,7 +1885,7 @@ export default function Chart({
           const lastBar = series[series.length - 1]!;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           futureRef.current?.setData(futureWhitespace(lastBar.time, interval) as any);
-          if (!heikin) setTabTitle(lastBar.close, symbol);
+          if (!heikin) setTabTitle(lastBar.close);
         }
 
         recomputeEmas(clean);

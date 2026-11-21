@@ -54,26 +54,12 @@ export const TIMEFRAMES = [
   { label: "1D", value: "1d" },
 ] as const;
 
-export const SYMBOL_OPTIONS = [
-  { label: "Binance BTCUSDT", value: "BTCUSDT" },
-  { label: "Binance ETHUSDT", value: "ETHUSDT" },
-  { label: "Binance SOLUSDT", value: "SOLUSDT" },
-  { label: "Binance HYPEUSDT", value: "HYPEUSDT" },
-  { label: "Binance XAUUSDT", value: "XAUUSDT" },
-] as const;
-
-export type SymbolOption = (typeof SYMBOL_OPTIONS)[number]["value"];
-
-function roundPriceForSymbol(n: number, sym?: string): number {
-  const s = (sym ?? "BTCUSDT").toUpperCase();
-  if (s.includes("HYPE")) return Math.round(n * 1000) / 1000;
-  if (s.includes("BTC")) return Math.round(n * 2) / 2;
-  return Math.round(n * 100) / 100;
+function roundPrice(n: number): number {
+  return Math.round(n * 2) / 2;
 }
 
 interface Props {
   symbol?: string;
-  onSymbolChange?: (symbol: string) => void;
   /** Calendar date is the reference day for drawing levels — not the chart window. */
   onDateChange: (date: string) => void;
   toggles: LineToggles;
@@ -86,11 +72,11 @@ interface Props {
   onClearCustom: () => Promise<void>;
   beep5mEnabled?: boolean;
   onToggleBeep5m?: () => void;
+  onTakeScreenshot?: () => void;
 }
 
 export default function TopBar({
   symbol = "BTCUSDT",
-  onSymbolChange,
   onDateChange,
   toggles,
   onToggle,
@@ -102,6 +88,7 @@ export default function TopBar({
   onClearCustom,
   beep5mEnabled = false,
   onToggleBeep5m,
+  onTakeScreenshot,
 }: Props) {
   const [date, setDate] = useState(todayStr);
   const [calOpen, setCalOpen] = useState(false);
@@ -109,21 +96,9 @@ export default function TopBar({
   const [calMonth, setCalMonth] = useState(() => new Date().getMonth());
   const boxRef = useRef<HTMLDivElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
-  const symbolDropdownRef = useRef<HTMLDetailsElement>(null);
   const [customInput, setCustomInput] = useState("");
   const [customColor, setCustomColor] = useState<CustomLevelColor>("yellow");
   const [customActionError, setCustomActionError] = useState<string | null>(null);
-
-  // Close symbol dropdown on click outside
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (symbolDropdownRef.current && !symbolDropdownRef.current.contains(e.target as Node)) {
-        symbolDropdownRef.current.open = false;
-      }
-    };
-    document.addEventListener("click", handler);
-    return () => document.removeEventListener("click", handler);
-  }, []);
 
   // Notify parent on mount and whenever date changes.
   useEffect(() => { onDateChange(date); }, [date, onDateChange]);
@@ -222,37 +197,30 @@ export default function TopBar({
   const prevDate = stepDay(date, -1);
   const nextDate = stepDay(date, +1);
 
-  const currentSymbolOption =
-    SYMBOL_OPTIONS.find((opt) => opt.value === symbol) ?? {
-      label: `Binance ${symbol}`,
-      value: symbol,
-    };
-
   return (
     <header className="top-bar">
-      {/* Symbol dropdown: | Binance BTCUSDT | */}
-      <details className="symbol-dropdown" ref={symbolDropdownRef}>
-        <summary className="symbol-box-wrapper" title="Select trading pair">
-          <span className="symbol-display-text">{currentSymbolOption.label}</span>
-        </summary>
-        <div className="symbol-menu">
-          {SYMBOL_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              className={`symbol-option${opt.value === symbol ? " active" : ""}`}
-              onClick={() => {
-                onSymbolChange?.(opt.value);
-                if (symbolDropdownRef.current) {
-                  symbolDropdownRef.current.open = false;
-                }
-              }}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      </details>
+      {/* Snapshot button: captures entire chart page without top bar */}
+      <button
+        type="button"
+        className="camera-btn"
+        title="Take screenshot"
+        aria-label="Take screenshot"
+        onClick={onTakeScreenshot}
+      >
+        <svg
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" />
+          <circle cx="12" cy="13" r="3" />
+        </svg>
+      </button>
 
       <div className="header-divider" />
 
@@ -421,7 +389,7 @@ export default function TopBar({
             return;
           }
           setCustomActionError(null);
-          void onAddCustom(roundPriceForSymbol(n, symbol), customColor).catch((err: unknown) => {
+          void onAddCustom(roundPrice(n), customColor).catch((err: unknown) => {
             setCustomActionError(err instanceof Error ? err.message : "Could not add custom level");
           });
           setCustomInput("");

@@ -84,10 +84,120 @@ function areTogglesEqual(a: LineToggles, b: LineToggles): boolean {
   );
 }
 
+function drawDomTreeToCanvas(
+  element: HTMLElement,
+  ctx: CanvasRenderingContext2D,
+  originRect: DOMRect
+) {
+  if (
+    element.classList.contains("context-menu") ||
+    element.classList.contains("copy-toast") ||
+    element.classList.contains("screenshot-toast")
+  ) {
+    return;
+  }
+
+  const style = window.getComputedStyle(element);
+  if (
+    style.display === "none" ||
+    style.visibility === "hidden" ||
+    style.opacity === "0"
+  ) {
+    return;
+  }
+
+  const rect = element.getBoundingClientRect();
+  const x = rect.left - originRect.left;
+  const y = rect.top - originRect.top;
+  const w = rect.width;
+  const h = rect.height;
+
+  if (w <= 0 || h <= 0) return;
+
+  const bg = style.backgroundColor;
+  const hasBg = bg && bg !== "transparent" && bg !== "rgba(0, 0, 0, 0)";
+
+  const borderWidth = parseFloat(style.borderWidth) || 0;
+  const borderColor = style.borderColor;
+  const hasBorder =
+    borderWidth > 0 &&
+    borderColor &&
+    borderColor !== "transparent" &&
+    borderColor !== "rgba(0, 0, 0, 0)";
+
+  const borderRadius = parseFloat(style.borderRadius) || 0;
+
+  if (hasBg || hasBorder) {
+    ctx.save();
+    ctx.beginPath();
+    if (borderRadius > 0 && typeof ctx.roundRect === "function") {
+      ctx.roundRect(x, y, w, h, borderRadius);
+    } else {
+      ctx.rect(x, y, w, h);
+    }
+    if (hasBg) {
+      ctx.fillStyle = bg;
+      ctx.fill();
+    }
+    if (hasBorder) {
+      ctx.strokeStyle = borderColor;
+      ctx.lineWidth = borderWidth;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  if (element.tagName === "SELECT") {
+    const sel = element as HTMLSelectElement;
+    const text = sel.options[sel.selectedIndex]?.text || sel.value;
+    if (text) {
+      ctx.save();
+      ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+      ctx.fillStyle = style.color;
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "center";
+      ctx.fillText(text, x + w / 2, y + h / 2);
+      ctx.restore();
+    }
+    return;
+  }
+
+  for (let i = 0; i < element.childNodes.length; i++) {
+    const node = element.childNodes[i];
+    if (node.nodeType === Node.TEXT_NODE) {
+      const rawText = node.textContent;
+      if (!rawText || !rawText.trim()) continue;
+
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const textRect = range.getBoundingClientRect();
+      if (textRect.width === 0 || textRect.height === 0) continue;
+
+      const tx = textRect.left - originRect.left;
+      const ty = textRect.top - originRect.top + textRect.height / 2;
+
+      ctx.save();
+      ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+      ctx.fillStyle = style.color;
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "left";
+      ctx.fillText(rawText.trim(), tx, ty);
+      ctx.restore();
+    } else if (node.nodeType === Node.ELEMENT_NODE) {
+      drawDomTreeToCanvas(node as HTMLElement, ctx, originRect);
+    }
+  }
+}
+
 export default function Page() {
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [selectedDate, setSelectedDate] = useState<string>("");
   const [selectedTimeframe, setSelectedTimeframe] = useState<string | null>(null);
+
+  const rawScreenshotRef = useRef<(() => HTMLCanvasElement | null) | null>(null);
+  const haTopScreenshotRef = useRef<(() => HTMLCanvasElement | null) | null>(null);
+  const haBottomScreenshotRef = useRef<(() => HTMLCanvasElement | null) | null>(null);
+  const [screenshotToast, setScreenshotToast] = useState<string | null>(null);
 
   const linkedTimeScales = useRef<ITimeScaleApi<Time>[]>([]);
   const linkedCrosshairSync = useRef<Record<LinkedCrosshairId, LinkedCrosshairSync | null>>({
@@ -350,13 +460,6 @@ export default function Page() {
     };
   }, [customLevelsRequest]);
 
-  const handleSymbolChange = useCallback((newSymbol: string) => {
-    setSymbol(newSymbol);
-    if (selectedDate) {
-      void fetchZones(selectedDate, newSymbol).then(setZones);
-    }
-  }, [selectedDate]);
-
   const onDateChange = useCallback(async (date: string) => {
     setSelectedDate(date);
     const data = await fetchZones(date, symbol);
@@ -430,11 +533,139 @@ export default function Page() {
   const topHaInterval = selectedTimeframe ?? "15m";
   const isSynchronized = selectedTimeframe !== null;
 
+  const handleTakeScreenshot = useCallback(async () => {
+    const mainEl = document.querySelector<HTMLElement>("main.page");
+    if (!mainEl) return;
+
+    try {
+      const mainRect = mainEl.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+
+      const masterCanvas = document.createElement("canvas");
+      masterCanvas.width = Math.round(mainRect.width * dpr);
+      masterCanvas.height = Math.round(mainRect.height * dpr);
+
+      const ctx = masterCanvas.getContext("2d");
+      if (!ctx) return;
+
+      // Scale context to DPR so all drawing uses standard CSS pixels
+      ctx.scale(dpr, dpr);
+
+      // Background matching page
+      ctx.fillStyle = "#131722";
+      ctx.fillRect(0, 0, mainRect.width, mainRect.height);
+
+      // Cells and their getters
+      const cellConfigs = [
+        { selector: ".chart-main", getter: rawScreenshotRef.current },
+        { selector: ".chart-ha-top", getter: haTopScreenshotRef.current },
+        { selector: ".chart-ha-bottom", getter: haBottomScreenshotRef.current },
+      ];
+
+      for (const { selector, getter } of cellConfigs) {
+        const cell = mainEl.querySelector<HTMLElement>(selector);
+        if (!cell) continue;
+
+        const cellRect = cell.getBoundingClientRect();
+        const cellX = cellRect.left - mainRect.left;
+        const cellY = cellRect.top - mainRect.top;
+        const cellW = cellRect.width;
+        const cellH = cellRect.height;
+
+        // Draw cell container (background, border, rounded corner clipping)
+        ctx.save();
+        ctx.beginPath();
+        if (typeof ctx.roundRect === "function") {
+          ctx.roundRect(cellX, cellY, cellW, cellH, 4);
+        } else {
+          ctx.rect(cellX, cellY, cellW, cellH);
+        }
+        ctx.fillStyle = "#141823";
+        ctx.fill();
+        ctx.strokeStyle = "#202636";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.clip();
+
+        // 1. Draw chart canvas
+        let drawn = false;
+        if (getter) {
+          try {
+            const chartCanvas = getter();
+            if (chartCanvas && chartCanvas.width > 0 && chartCanvas.height > 0) {
+              ctx.drawImage(chartCanvas, cellX, cellY, cellW, cellH);
+              drawn = true;
+            }
+          } catch (e) {
+            console.error("Screenshot capture error", e);
+          }
+        }
+
+        // Fallback: draw all canvas elements in cell
+        if (!drawn) {
+          const canvases = cell.querySelectorAll<HTMLCanvasElement>("canvas");
+          canvases.forEach((c) => {
+            const cr = c.getBoundingClientRect();
+            if (cr.width > 0 && cr.height > 0) {
+              ctx.drawImage(c, cr.left - mainRect.left, cr.top - mainRect.top, cr.width, cr.height);
+            }
+          });
+        }
+
+        // 2. Draw cell header DOM overlay
+        const cellHeader = cell.querySelector<HTMLElement>(".cell-header");
+        if (cellHeader) {
+          drawDomTreeToCanvas(cellHeader, ctx, mainRect);
+        }
+
+        ctx.restore();
+      }
+
+      // Draw global TZ dropdown badge
+      const tzWrapper = document.querySelector<HTMLElement>(".global-tz-wrapper");
+      if (tzWrapper) {
+        drawDomTreeToCanvas(tzWrapper, ctx, mainRect);
+      }
+
+      // Export PNG and trigger immediate download
+      masterCanvas.toBlob((blob) => {
+        if (!blob) return;
+
+        // Copy to clipboard if supported
+        if (navigator.clipboard && typeof ClipboardItem !== "undefined") {
+          try {
+            void navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+          } catch {}
+        }
+
+        const now = new Date();
+        const pad = (n: number) => String(n).padStart(2, "0");
+        const dateStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+        const filename = `BTCUSDT_${dateStr}.png`;
+
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }, 200);
+
+        setScreenshotToast(`Snapshot saved: ${filename}`);
+        setTimeout(() => setScreenshotToast(null), 2500);
+      }, "image/png");
+    } catch (err) {
+      console.error("handleTakeScreenshot failed", err);
+    }
+  }, []);
+
   return (
     <>
       <TopBar
         symbol={symbol}
-        onSymbolChange={handleSymbolChange}
         onDateChange={onDateChange}
         toggles={toggles}
         onToggle={onToggle}
@@ -446,6 +677,7 @@ export default function Page() {
         onClearCustom={() => customLevelsRequest("DELETE")}
         beep5mEnabled={beep5mEnabled}
         onToggleBeep5m={toggleBeep5m}
+        onTakeScreenshot={handleTakeScreenshot}
       />
       <main className={`page${switchedLayout ? " switched" : ""}`}>
         <div className="cell chart-main">
@@ -465,6 +697,7 @@ export default function Page() {
             onDeleteCustomLevel={onDeleteCustomLevel}
             onEditCustomLevel={onEditCustomLevel}
             onChartDoubleClick={toggleLayout}
+            onRegisterScreenshot={(fn) => { rawScreenshotRef.current = fn; }}
             registerTimeScale={isSynchronized ? registerLinkedTime : undefined}
             siblingScales={isSynchronized ? linkedTimeScales : undefined}
             linkedCrosshairId={isSynchronized ? "raw" : undefined}
@@ -489,6 +722,7 @@ export default function Page() {
             onDeleteCustomLevel={onDeleteCustomLevel}
             onEditCustomLevel={onEditCustomLevel}
             onChartDoubleClick={toggleLayout}
+            onRegisterScreenshot={(fn) => { haTopScreenshotRef.current = fn; }}
             registerTimeScale={isSynchronized ? registerLinkedTime : undefined}
             siblingScales={isSynchronized ? linkedTimeScales : undefined}
             linkedCrosshairId={isSynchronized ? "heikin" : undefined}
@@ -513,6 +747,7 @@ export default function Page() {
             onDeleteCustomLevel={onDeleteCustomLevel}
             onEditCustomLevel={onEditCustomLevel}
             onChartDoubleClick={toggleLayout}
+            onRegisterScreenshot={(fn) => { haBottomScreenshotRef.current = fn; }}
           />
         </div>
       </main>
@@ -530,6 +765,15 @@ export default function Page() {
           <option value={8}>UTC+8</option>
         </select>
       </div>
+
+      {screenshotToast && (
+        <div className="screenshot-toast" role="status">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+          <span>{screenshotToast}</span>
+        </div>
+      )}
     </>
   );
 }
