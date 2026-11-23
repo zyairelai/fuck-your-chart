@@ -279,14 +279,14 @@ export default function TopBar({
 
       <div className="header-divider" />
 
-      {/* 5m Candle Close Alert Bell Toggle */}
+      {/* 5m Candle Alert Bell Toggle */}
       <button
         type="button"
         className={`topbar-bell-btn${beep5mEnabled ? " active" : " off"}`}
         title={
           beep5mEnabled
-            ? "5m candle close alert: ON (rings every 5m) — click to turn off"
-            : "5m candle close alert: OFF — click to turn on"
+            ? "5m candle Alert: ON (rings every 5m) — Click to turn OFF"
+            : "5m candle Alert: OFF — Click to turn ON"
         }
         onClick={onToggleBeep5m}
         aria-pressed={beep5mEnabled}
@@ -318,7 +318,7 @@ export default function TopBar({
               type="button"
               className={`timeframe-btn${isActive ? " active" : ""}`}
               onClick={() => onTimeframeChange(isActive ? null : value)}
-              title={isActive ? `Active: ${label} (click to turn off)` : `Switch left charts to ${label}`}
+              title={isActive ? `Active: ${label} (Click to turn OFF)` : `Switch left charts to ${label}`}
             >
               {label}
             </button>

@@ -561,9 +561,9 @@ export default function Chart({
     label: string;
   }
   const HTF_EMA_CONFIGS: HtfEmaConfig[] = [
-    { key: "15m200", interval: "15m", period: 200, color: "#42a5f5", label: "15m 200" },
-    { key: "1h200",  interval: "1h",  period: 200, color: "#ab47bc", label: "1h 200"  },
-    { key: "4h200",  interval: "4h",  period: 200, color: "#ef5350", label: "4h 200"  },
+    { key: "15m200", interval: "15m", period: 200, color: "#42a5f5", label: "15m" },
+    { key: "1h200", interval: "1h", period: 200, color: "#ab47bc", label: "1h" },
+    { key: "4h200", interval: "4h", period: 200, color: "#ef5350", label: "4h" },
   ];
   const HTF_INTERVAL_STEP: Record<HtfInterval, number> = { "15m": 900, "1h": 3600, "4h": 14400 };
 
@@ -1014,7 +1014,7 @@ export default function Chart({
           htfCacheRef.current[htfInterval] = cleanAndSort([...map.values()]);
           repaintHtfInterval(htfInterval);
         }
-      } catch {}
+      } catch { }
       if (htfIntervalRefCountRef.current[htfInterval] > 0) {
         htfPollTimerRef.current[htfInterval] = setTimeout(poll, 5000);
       }
@@ -2008,7 +2008,7 @@ export default function Chart({
         type="button"
         className={`ema-chip${on ? "" : " off"}`}
         style={{ background: bg, color: text }}
-        title={`EMA ${p} — click to ${on ? "hide" : "show"}`}
+        title={`EMA ${p} — Click to ${on ? "Hide" : "Show"}`}
         onClick={(e) => {
           e.stopPropagation();
           toggleEma(p);
@@ -2051,7 +2051,7 @@ export default function Chart({
             type="button"
             className={`level-chip${levelsEnabled ? " active" : " off"}`}
             aria-pressed={levelsEnabled}
-            title={`Levels — click to ${levelsEnabled ? "hide" : "show"} all price lines`}
+            title={`Levels — Click to ${levelsEnabled ? "Hide" : "Show"} All Price Lines`}
             onClick={(e) => {
               e.stopPropagation();
               toggleLevels();
@@ -2068,7 +2068,7 @@ export default function Chart({
                   type="button"
                   className={`footprint-chip${footprintEnabled ? " active" : " off"}`}
                   aria-pressed={footprintEnabled}
-                  title={`Footprint delta — click to ${footprintEnabled ? "hide" : "show"}`}
+                  title={`Footprint delta — Click to ${footprintEnabled ? "Hide" : "Show"}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     toggleFootprint();
@@ -2093,7 +2093,7 @@ export default function Chart({
                     type="button"
                     className={`footprint-chip${htfEnabled[cfg.key] ? " active" : " off"}`}
                     aria-pressed={htfEnabled[cfg.key]}
-                    title={`${cfg.label} EMA — click to ${htfEnabled[cfg.key] ? "hide" : "show"}`}
+                    title={`${cfg.label} EMA — Click to ${htfEnabled[cfg.key] ? "Hide" : "Show"}`}
                     style={htfEnabled[cfg.key] ? { background: cfg.color, borderColor: cfg.color, color: "#0b0e13" } : undefined}
                     onClick={(e) => {
                       e.stopPropagation();
