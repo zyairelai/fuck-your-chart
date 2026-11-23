@@ -92,7 +92,8 @@ function drawDomTreeToCanvas(
   if (
     element.classList.contains("context-menu") ||
     element.classList.contains("copy-toast") ||
-    element.classList.contains("screenshot-toast")
+    element.classList.contains("screenshot-toast") ||
+    element.classList.contains("chart-maximize-btn")
   ) {
     return;
   }
@@ -193,6 +194,10 @@ export default function Page() {
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [selectedDate, setSelectedDate] = useState<string>("");
   const [selectedTimeframe, setSelectedTimeframe] = useState<string | null>(null);
+  const [maximizedChart, setMaximizedChart] = useState<"main" | "ha-top" | "ha-bottom" | null>(null);
+  const [singleTimeframe, setSingleTimeframe] = useState<string | null>(null);
+  const maximizedChartRef = useRef(maximizedChart);
+  maximizedChartRef.current = maximizedChart;
 
   const rawScreenshotRef = useRef<(() => HTMLCanvasElement | null) | null>(null);
   const haTopScreenshotRef = useRef<(() => HTMLCanvasElement | null) | null>(null);
@@ -224,10 +229,54 @@ export default function Page() {
   const handleTimeframeChange = (tf: string | null) => {
     linkedTimeScales.current = [];
     linkedCrosshairSync.current = { raw: null, heikin: null };
-    setSelectedTimeframe(tf);
+    if (maximizedChart !== null) {
+      setSingleTimeframe(tf);
+    } else {
+      setSelectedTimeframe(tf);
+    }
+  };
+
+  // When toggling 1 layout mode, dispatch window resize so charts recalculate full dimensions
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      window.dispatchEvent(new Event("resize"));
+    }, 40);
+    return () => clearTimeout(timer);
+  }, [maximizedChart]);
+
+  const handleToggleMaximize = (chartId: "main" | "ha-top" | "ha-bottom") => {
+    if (maximizedChart === chartId) {
+      // Exit 1 layout mode -> back to 3 layout default mode
+      setMaximizedChart(null);
+      setSingleTimeframe(null);
+    } else {
+      // Enter 1 layout mode for this chart
+      setMaximizedChart(chartId);
+      const currentInterval =
+        chartId === "main"
+          ? (selectedTimeframe ?? "5m")
+          : chartId === "ha-top"
+          ? (selectedTimeframe ?? "15m")
+          : "3m";
+      setSingleTimeframe(currentInterval);
+    }
+  };
+
+  const handleChartDoubleClick = (chartId: "main" | "ha-top" | "ha-bottom") => {
+    if (maximizedChartRef.current !== null) {
+      // In 1 layout mode: double click exits back to 3 layout default mode!
+      setMaximizedChart(null);
+      setSingleTimeframe(null);
+    } else {
+      // In 3 layout mode: previous toggle layout behavior
+      toggleLayout();
+    }
   };
   const [tz, setTz] = useState<TzOffset>(8);
   const [switchedLayout, setSwitchedLayout] = useState(false);
+  const [levelsEnabledMain, setLevelsEnabledMain] = useState(true);
+  const [levelsEnabledHaTop, setLevelsEnabledHaTop] = useState(false);
+  const [levelsEnabledHaBottom, setLevelsEnabledHaBottom] = useState(true);
   const [zones, setZones] = useState<Zones | null>(null);
   const [toggles, setToggles] = useState<LineToggles>(DEFAULT_TOGGLES);
   const [customLevels, setCustomLevels] = useState<CustomLevel[]>([]);
@@ -529,9 +578,25 @@ export default function Page() {
     });
   }, []);
 
-  const rawInterval = selectedTimeframe ?? "5m";
-  const topHaInterval = selectedTimeframe ?? "15m";
-  const isSynchronized = selectedTimeframe !== null;
+  const rawInterval =
+    maximizedChart === "main"
+      ? (singleTimeframe ?? (selectedTimeframe ?? "5m"))
+      : (selectedTimeframe ?? "5m");
+  const topHaInterval =
+    maximizedChart === "ha-top"
+      ? (singleTimeframe ?? (selectedTimeframe ?? "15m"))
+      : (selectedTimeframe ?? "15m");
+  const haBottomInterval =
+    maximizedChart === "ha-bottom"
+      ? (singleTimeframe ?? "3m")
+      : "3m";
+
+  const isSynchronized = selectedTimeframe !== null && maximizedChart === null;
+
+  const activeTimeframeInTopBar =
+    maximizedChart !== null
+      ? (singleTimeframe ?? (maximizedChart === "main" ? rawInterval : maximizedChart === "ha-top" ? topHaInterval : haBottomInterval))
+      : selectedTimeframe;
 
   const handleTakeScreenshot = useCallback(async () => {
     const mainEl = document.querySelector<HTMLElement>("main.page");
@@ -567,6 +632,7 @@ export default function Page() {
         if (!cell) continue;
 
         const cellRect = cell.getBoundingClientRect();
+        if (cellRect.width <= 0 || cellRect.height <= 0) continue;
         const cellX = cellRect.left - mainRect.left;
         const cellY = cellRect.top - mainRect.top;
         const cellW = cellRect.width;
@@ -669,7 +735,7 @@ export default function Page() {
         onDateChange={onDateChange}
         toggles={toggles}
         onToggle={onToggle}
-        selectedTimeframe={selectedTimeframe}
+        selectedTimeframe={activeTimeframeInTopBar}
         onTimeframeChange={handleTimeframeChange}
         customLevelsReady={customLevelsReady}
         customLevelsError={customLevelsError}
@@ -679,7 +745,7 @@ export default function Page() {
         onToggleBeep5m={toggleBeep5m}
         onTakeScreenshot={handleTakeScreenshot}
       />
-      <main className={`page${switchedLayout ? " switched" : ""}`}>
+      <main className={`page${switchedLayout ? " switched" : ""}${maximizedChart ? ` maximized-${maximizedChart}` : ""}`}>
         <div className="cell chart-main">
           <Chart
             key={`raw-${symbol}-${rawInterval}`}
@@ -689,14 +755,17 @@ export default function Page() {
             allowFootprint={true}
             defaultFootprintEnabled={true}
             allowHtfEma={true}
-            defaultLevelsEnabled={true}
+            levelsEnabled={levelsEnabledMain}
+            onLevelsEnabledChange={setLevelsEnabledMain}
             tz={tz}
             zones={zones}
             lineToggles={toggles}
             customLevels={customLevels}
             onDeleteCustomLevel={onDeleteCustomLevel}
             onEditCustomLevel={onEditCustomLevel}
-            onChartDoubleClick={toggleLayout}
+            onChartDoubleClick={() => handleChartDoubleClick("main")}
+            isMaximized={maximizedChart === "main"}
+            onToggleMaximize={() => handleToggleMaximize("main")}
             onRegisterScreenshot={(fn) => { rawScreenshotRef.current = fn; }}
             registerTimeScale={isSynchronized ? registerLinkedTime : undefined}
             siblingScales={isSynchronized ? linkedTimeScales : undefined}
@@ -714,14 +783,17 @@ export default function Page() {
             emas={ALL_EMAS}
             allowFootprint={false}
             defaultFootprintEnabled={false}
-            defaultLevelsEnabled={false}
+            levelsEnabled={levelsEnabledHaTop}
+            onLevelsEnabledChange={setLevelsEnabledHaTop}
             tz={tz}
             zones={zones}
             lineToggles={toggles}
             customLevels={customLevels}
             onDeleteCustomLevel={onDeleteCustomLevel}
             onEditCustomLevel={onEditCustomLevel}
-            onChartDoubleClick={toggleLayout}
+            onChartDoubleClick={() => handleChartDoubleClick("ha-top")}
+            isMaximized={maximizedChart === "ha-top"}
+            onToggleMaximize={() => handleToggleMaximize("ha-top")}
             onRegisterScreenshot={(fn) => { haTopScreenshotRef.current = fn; }}
             registerTimeScale={isSynchronized ? registerLinkedTime : undefined}
             siblingScales={isSynchronized ? linkedTimeScales : undefined}
@@ -732,21 +804,24 @@ export default function Page() {
         </div>
         <div className="cell chart-ha-bottom">
           <Chart
-            key={`ha-bottom-${symbol}-3m`}
+            key={`ha-bottom-${symbol}-${haBottomInterval}`}
             symbol={symbol}
-            interval="3m"
+            interval={haBottomInterval}
             heikin
             emas={ALL_EMAS}
             allowFootprint={false}
             defaultFootprintEnabled={false}
-            defaultLevelsEnabled={true}
+            levelsEnabled={levelsEnabledHaBottom}
+            onLevelsEnabledChange={setLevelsEnabledHaBottom}
             tz={tz}
             zones={zones}
             lineToggles={toggles}
             customLevels={customLevels}
             onDeleteCustomLevel={onDeleteCustomLevel}
             onEditCustomLevel={onEditCustomLevel}
-            onChartDoubleClick={toggleLayout}
+            onChartDoubleClick={() => handleChartDoubleClick("ha-bottom")}
+            isMaximized={maximizedChart === "ha-bottom"}
+            onToggleMaximize={() => handleToggleMaximize("ha-bottom")}
             onRegisterScreenshot={(fn) => { haBottomScreenshotRef.current = fn; }}
           />
         </div>

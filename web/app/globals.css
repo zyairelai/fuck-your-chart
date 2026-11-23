@@ -381,6 +381,66 @@ body {
   grid-row: 2;
 }
 
+/* ── 1 layout mode (single chart maximized to whole screen) ─────────────── */
+.page.maximized-main .chart-main,
+.page.switched.maximized-main .chart-main,
+.page.maximized-ha-top .chart-ha-top,
+.page.switched.maximized-ha-top .chart-ha-top,
+.page.maximized-ha-bottom .chart-ha-bottom,
+.page.switched.maximized-ha-bottom .chart-ha-bottom {
+  grid-column: 1 / span 2 !important;
+  grid-row: 1 / span 2 !important;
+  display: block !important;
+  z-index: 2;
+}
+
+.page.maximized-main .chart-ha-top,
+.page.maximized-main .chart-ha-bottom,
+.page.switched.maximized-main .chart-ha-top,
+.page.switched.maximized-main .chart-ha-bottom,
+.page.maximized-ha-top .chart-main,
+.page.maximized-ha-top .chart-ha-bottom,
+.page.switched.maximized-ha-top .chart-main,
+.page.switched.maximized-ha-top .chart-ha-bottom,
+.page.maximized-ha-bottom .chart-main,
+.page.maximized-ha-bottom .chart-ha-top,
+.page.switched.maximized-ha-bottom .chart-main,
+.page.switched.maximized-ha-bottom .chart-ha-top {
+  display: none !important;
+}
+
+/* Maximize button inside chart cell */
+.chart-maximize-btn {
+  position: absolute;
+  z-index: 12;
+  width: 26px;
+  height: 26px;
+  background-color: rgba(30, 34, 45, 0.85);
+  border: 1px solid #2a2e39;
+  border-radius: 4px;
+  color: #787b87;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.chart-maximize-btn:hover {
+  background-color: #252a37;
+  border-color: #2962ff;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.chart-maximize-btn.active {
+  background-color: rgba(41, 98, 255, 0.2);
+  border-color: #2962ff;
+  color: #2962ff;
+}
+
 .cell {
   position: relative;
   background: #141823;

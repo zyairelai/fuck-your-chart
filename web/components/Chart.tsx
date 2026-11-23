@@ -199,8 +199,8 @@ const TARGET_BAR_SPACING = 6;
 /** Tiny extra pad after the last *future* whitespace bar. */
 const RIGHT_GAP_BARS = 2;
 
-function getTargetBarSpacing(interval: string): number {
-  return interval === "3m" ? 3.5 : TARGET_BAR_SPACING;
+function getTargetBarSpacing(_interval?: string): number {
+  return TARGET_BAR_SPACING;
 }
 
 const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -431,6 +431,10 @@ interface Props {
   defaultFootprintEnabled?: boolean;
   /** Whether the price levels (zones and custom) are visible on first mount. */
   defaultLevelsEnabled?: boolean;
+  /** Controlled state for whether price levels are enabled. */
+  levelsEnabled?: boolean;
+  /** Callback fired when user toggles the Level chip. */
+  onLevelsEnabledChange?: (enabled: boolean) => void;
   /** Display timezone offset (hours). Shared global state from page. */
   tz?: TzOffset;
   /** Horizontal levels from the calendar date (does not move the chart). */
@@ -451,6 +455,8 @@ interface Props {
   /** Enable 1h / 4h higher-timeframe EMA toggles (50 & 200 EMA from those TFs). */
   allowHtfEma?: boolean;
   onRegisterScreenshot?: (getScreenshot: (() => HTMLCanvasElement | null) | null) => void;
+  isMaximized?: boolean;
+  onToggleMaximize?: () => void;
 }
 
 export default function Chart({
@@ -462,6 +468,8 @@ export default function Chart({
   allowFootprint = true,
   defaultFootprintEnabled = false,
   defaultLevelsEnabled = true,
+  levelsEnabled: levelsEnabledProp,
+  onLevelsEnabledChange,
   tz = 0,
   zones = null,
   lineToggles = { weekly: true, monday: false, pdhlm: true, fibb: false, weekend: false },
@@ -476,11 +484,17 @@ export default function Chart({
   onLinkedCrosshair,
   allowHtfEma = false,
   onRegisterScreenshot,
+  isMaximized = false,
+  onToggleMaximize,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const onRegisterScreenshotRef = useRef(onRegisterScreenshot);
   onRegisterScreenshotRef.current = onRegisterScreenshot;
+  const onChartDoubleClickRef = useRef(onChartDoubleClick);
+  onChartDoubleClickRef.current = onChartDoubleClick;
+  const isMaximizedRef = useRef(isMaximized);
+  isMaximizedRef.current = isMaximized;
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const deltaRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   /** Invisible future timestamps so the axis labels 16:00→20:00 without
@@ -594,9 +608,19 @@ export default function Chart({
   const [copyToast, setCopyToast] = useState<string | null>(null);
   const [footprintEnabled, setFootprintEnabled] = useState(allowFootprint && defaultFootprintEnabled);
   const footprintEnabledRef = useRef(allowFootprint && defaultFootprintEnabled);
-  const [levelsEnabled, setLevelsEnabled] = useState(defaultLevelsEnabled);
-  const levelsEnabledRef = useRef(defaultLevelsEnabled);
+  const [internalLevelsEnabled, setInternalLevelsEnabled] = useState(defaultLevelsEnabled);
+  const levelsEnabled = levelsEnabledProp !== undefined ? levelsEnabledProp : internalLevelsEnabled;
+  const levelsEnabledRef = useRef(levelsEnabled);
   levelsEnabledRef.current = levelsEnabled;
+
+  const toggleLevels = () => {
+    const next = !levelsEnabled;
+    if (onLevelsEnabledChange) {
+      onLevelsEnabledChange(next);
+    } else {
+      setInternalLevelsEnabled(next);
+    }
+  };
   const copyToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /** Right-click context menu state. */
@@ -1218,6 +1242,10 @@ export default function Chart({
     suppressTimeSyncRef.current = true;
     pinnedToRightRef.current = true;
     rightScaleRef.current?.setAutoScale(true);
+    rightScaleRef.current?.applyOptions({
+      autoScale: true,
+      scaleMargins: { top: 0.08, bottom: 0.08 },
+    });
     const ts = c.timeScale();
     const spacing = getTargetBarSpacing(interval);
     ts.applyOptions({
@@ -1570,7 +1598,6 @@ export default function Chart({
     // Right-click anywhere in the chart -> open the custom context menu.
     const el = containerRef.current;
     const onDoubleClick = async (e: MouseEvent) => {
-      if (!onChartDoubleClick) return;
       const series = candleRef.current;
       let closestPrice: number | null = null;
       let minPixelDiff = Infinity;
@@ -1587,29 +1614,40 @@ export default function Chart({
           }
         }
       }
-      if (closestPrice == null || minPixelDiff > 10) {
-        onChartDoubleClick();
+
+      // If double-clicked on or near a horizontal line, copy the line price (do NOT toggle/exit)
+      if (closestPrice != null && minPixelDiff <= 12) {
+        e.preventDefault();
+        e.stopPropagation();
+        const formatted = String(Math.round(closestPrice));
+        try {
+          if (navigator.clipboard && window.isSecureContext) {
+            try {
+              await navigator.clipboard.writeText(formatted);
+            } catch {
+              if (!copyToLegacyClipboard(formatted)) {
+                throw new Error("Clipboard write was rejected");
+              }
+            }
+          } else if (!copyToLegacyClipboard(formatted)) {
+            throw new Error("Clipboard copy command was rejected");
+          }
+          setCopyToast(formatted);
+          if (copyToastTimerRef.current) clearTimeout(copyToastTimerRef.current);
+          copyToastTimerRef.current = setTimeout(() => setCopyToast(null), 3_000);
+        } catch (err) {
+          console.error("[clipboard] could not copy chart level:", err);
+        }
         return;
       }
 
-      const formatted = String(Math.round(closestPrice));
-      try {
-        if (navigator.clipboard && window.isSecureContext) {
-          try {
-            await navigator.clipboard.writeText(formatted);
-          } catch {
-            if (!copyToLegacyClipboard(formatted)) {
-              throw new Error("Clipboard write was rejected");
-            }
-          }
-        } else if (!copyToLegacyClipboard(formatted)) {
-          throw new Error("Clipboard copy command was rejected");
-        }
-        setCopyToast(formatted);
-        if (copyToastTimerRef.current) clearTimeout(copyToastTimerRef.current);
-        copyToastTimerRef.current = setTimeout(() => setCopyToast(null), 3_000);
-      } catch (err) {
-        console.error("[clipboard] could not copy chart level:", err);
+      // Double-clicked on black / empty space:
+      // If 1-layout mode is active, exit back to 3-layout mode.
+      // Otherwise in 3-layout mode, toggle layout.
+      if (onChartDoubleClickRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        onChartDoubleClickRef.current();
       }
     };
     const onContext = (e: MouseEvent) => {
@@ -1665,7 +1703,7 @@ export default function Chart({
       });
     };
 
-    el?.addEventListener("dblclick", onDoubleClick);
+    el?.addEventListener("dblclick", onDoubleClick, true);
     el?.addEventListener("contextmenu", onContext);
 
     // --- Countdown timer (every second) ------------------------------------
@@ -1705,7 +1743,7 @@ export default function Chart({
         } catch (_) { /* ignore */ }
       }
       closeLineRef.current = null;
-      el?.removeEventListener("dblclick", onDoubleClick);
+      el?.removeEventListener("dblclick", onDoubleClick, true);
       el?.removeEventListener("contextmenu", onContext);
       el?.removeEventListener("pointerenter", onPointerEnter);
       el?.removeEventListener("pointerleave", onPointerLeave);
@@ -2016,7 +2054,7 @@ export default function Chart({
             title={`Levels — click to ${levelsEnabled ? "hide" : "show"} all price lines`}
             onClick={(e) => {
               e.stopPropagation();
-              setLevelsEnabled((prev) => !prev);
+              toggleLevels();
             }}
           >
             Level
@@ -2079,6 +2117,37 @@ export default function Chart({
         className="chart-canvas"
         style={{ width: "100%", height: "100%", cursor: "crosshair" }}
       />
+      {/* Maximize / 1 layout mode toggle button */}
+      <button
+        type="button"
+        className={`chart-maximize-btn${isMaximized ? " active" : ""}`}
+        style={{
+          bottom: allowFootprint && footprintEnabled ? "64px" : "32px",
+          left: "10px",
+        }}
+        title={isMaximized ? "Exit 1 layout mode (or double click chart)" : "Maximize chart (1 layout mode)"}
+        aria-label={isMaximized ? "Exit 1 layout mode" : "Maximize chart"}
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleMaximize?.();
+        }}
+      >
+        {isMaximized ? (
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 14h6v6" />
+            <path d="M20 10h-6V4" />
+            <path d="M14 10l7-7" />
+            <path d="M10 14l-7 7" />
+          </svg>
+        ) : (
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M15 3h6v6" />
+            <path d="M9 21H3v-6" />
+            <path d="M21 3l-7 7" />
+            <path d="M3 21l7-7" />
+          </svg>
+        )}
+      </button>
       {copyToast && (
         <div className="copy-toast" role="status">
           <span className="copy-toast-icon">✓</span>
