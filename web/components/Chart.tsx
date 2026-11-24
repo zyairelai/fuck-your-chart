@@ -414,6 +414,30 @@ export interface CustomLevel {
 export type LinkedCrosshairId = "raw" | "heikin";
 export type LinkedCrosshairSync = (time: number | null) => void;
 
+// ---- HTF (Higher-Timeframe) EMA types & config ----
+// 3 individual toggles: 15m200, 1h200, 4h200.
+export type HtfEmaKey = "15m200" | "1h200" | "4h200";
+export type HtfInterval = "15m" | "1h" | "4h";
+export interface HtfEmaConfig {
+  key: HtfEmaKey;
+  interval: HtfInterval;
+  period: 50 | 200;
+  color: string;
+  label: string;
+}
+export const HTF_EMA_CONFIGS: HtfEmaConfig[] = [
+  { key: "15m200", interval: "15m", period: 200, color: "#42a5f5", label: "15m" },
+  { key: "1h200", interval: "1h", period: 200, color: "#ab47bc", label: "1h" },
+  { key: "4h200", interval: "4h", period: 200, color: "#ef5350", label: "4h" },
+];
+export const HTF_INTERVAL_STEP: Record<HtfInterval, number> = { "15m": 900, "1h": 3600, "4h": 14400 };
+
+export const makeHtfEnabledDefault = (): Record<HtfEmaKey, boolean> => ({
+  "15m200": false,
+  "1h200": false,
+  "4h200": false,
+});
+
 const DEFAULT_EMAS: number[] = [10, 20, 50, 200];
 const DEFAULT_EMA_OFF: number[] = [];
 
@@ -454,6 +478,8 @@ interface Props {
   onLinkedCrosshair?: (id: LinkedCrosshairId, time: number | null) => void;
   /** Enable 1h / 4h higher-timeframe EMA toggles (50 & 200 EMA from those TFs). */
   allowHtfEma?: boolean;
+  htfEnabled?: Record<HtfEmaKey, boolean>;
+  onHtfEnabledChange?: (state: Record<HtfEmaKey, boolean>) => void;
   onRegisterScreenshot?: (getScreenshot: (() => HTMLCanvasElement | null) | null) => void;
   isMaximized?: boolean;
   onToggleMaximize?: () => void;
@@ -483,6 +509,8 @@ export default function Chart({
   registerLinkedCrosshair,
   onLinkedCrosshair,
   allowHtfEma = false,
+  htfEnabled: htfEnabledProp,
+  onHtfEnabledChange,
   onRegisterScreenshot,
   isMaximized = false,
   onToggleMaximize,
@@ -550,28 +578,8 @@ export default function Chart({
   const hoverDataRef = useRef(new Map<number, HoverData>());
 
   // ---- HTF (Higher-Timeframe) EMA state ----
-  // 3 individual toggles: 15m200, 1h200, 4h200.
-  type HtfEmaKey = "15m200" | "1h200" | "4h200";
-  type HtfInterval = "15m" | "1h" | "4h";
-  interface HtfEmaConfig {
-    key: HtfEmaKey;
-    interval: HtfInterval;
-    period: 50 | 200;
-    color: string;
-    label: string;
-  }
-  const HTF_EMA_CONFIGS: HtfEmaConfig[] = [
-    { key: "15m200", interval: "15m", period: 200, color: "#42a5f5", label: "15m" },
-    { key: "1h200", interval: "1h", period: 200, color: "#ab47bc", label: "1h" },
-    { key: "4h200", interval: "4h", period: 200, color: "#ef5350", label: "4h" },
-  ];
-  const HTF_INTERVAL_STEP: Record<HtfInterval, number> = { "15m": 900, "1h": 3600, "4h": 14400 };
-
-  const makeHtfEnabledDefault = (): Record<HtfEmaKey, boolean> => ({
-    "15m200": false, "1h200": false,
-    "4h200": false,
-  });
-  const [htfEnabled, setHtfEnabled] = useState<Record<HtfEmaKey, boolean>>(makeHtfEnabledDefault);
+  const [internalHtfEnabled, setInternalHtfEnabled] = useState<Record<HtfEmaKey, boolean>>(makeHtfEnabledDefault);
+  const htfEnabled = htfEnabledProp !== undefined ? htfEnabledProp : internalHtfEnabled;
   const htfEnabledRef = useRef(htfEnabled);
   htfEnabledRef.current = htfEnabled;
   /** One line series per HTF EMA key. */
@@ -940,7 +948,8 @@ export default function Chart({
     }
 
     const result: { time: Time; value: number }[] = [];
-    let currentHtfEma: number | null = null;
+    const earliestEma = smoothed.length > 0 ? smoothed[0]! : null;
+    let currentHtfEma: number | null = earliestEma;
     for (const bar of chartBars) {
       const htfStart = Math.floor(bar.time / htfStepSec) * htfStepSec;
       const emaVal = htfEmaMap.get(htfStart);
@@ -992,10 +1001,22 @@ export default function Chart({
     if (htfLoadingRef.current[htfInterval]) return; // already loading; paint will happen when done
     htfLoadingRef.current[htfInterval] = true;
     try {
-      const klines = await fetchLatestKlines(htfInterval, 500, symbol);
-      if (klines.length === 0) return;
-      htfCacheRef.current[htfInterval] = cleanAndSort(klines);
-      repaintHtfInterval(htfInterval);
+      const klines = await fetchLatestKlines(htfInterval, 1000, symbol);
+      if (klines.length > 0) {
+        let allHtf = cleanAndSort(klines);
+        const oldestChartTime = cacheRef.current.length > 0 ? cacheRef.current[0]!.time : 0;
+        if (oldestChartTime > 0 && allHtf.length > 0 && allHtf[0]!.time > oldestChartTime) {
+          try {
+            const endTimeMs = allHtf[0]!.time * 1000 - 1;
+            const olderHtf = await fetchOlderKlines(htfInterval, endTimeMs, 1000, symbol);
+            if (olderHtf.length > 0) {
+              allHtf = cleanAndSort([...olderHtf, ...allHtf]);
+            }
+          } catch {}
+        }
+        htfCacheRef.current[htfInterval] = allHtf;
+        repaintHtfInterval(htfInterval);
+      }
     } catch (err) {
       console.warn(`[chart] HTF ${htfInterval} initial fetch failed:`, err);
     } finally {
@@ -1024,35 +1045,37 @@ export default function Chart({
 
   /** Toggle a single HTF EMA key on/off. */
   const toggleHtfEma = (key: HtfEmaKey) => {
-    setHtfEnabled((prev) => {
-      const isNowOn = !prev[key];
-      const next = { ...prev, [key]: isNowOn };
-      htfEnabledRef.current = next;
+    const isNowOn = !htfEnabledRef.current[key];
+    const next = { ...htfEnabledRef.current, [key]: isNowOn };
+    htfEnabledRef.current = next;
+    if (onHtfEnabledChange) {
+      onHtfEnabledChange(next);
+    } else {
+      setInternalHtfEnabled(next);
+    }
 
-      const cfg = HTF_EMA_CONFIGS.find((c) => c.key === key)!;
-      const line = htfLineRefs.current[key];
-      if (line) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        line.applyOptions({ visible: isNowOn } as any);
-        if (!isNowOn) line.setData([]);
-      }
+    const cfg = HTF_EMA_CONFIGS.find((c) => c.key === key)!;
+    const line = htfLineRefs.current[key];
+    if (line) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      line.applyOptions({ visible: isNowOn } as any);
+      if (!isNowOn) line.setData([]);
+    }
 
-      // Update ref-count for this interval
-      const delta = isNowOn ? 1 : -1;
-      htfIntervalRefCountRef.current[cfg.interval] = Math.max(0,
-        htfIntervalRefCountRef.current[cfg.interval] + delta,
-      );
+    // Update ref-count for this interval
+    const delta = isNowOn ? 1 : -1;
+    htfIntervalRefCountRef.current[cfg.interval] = Math.max(0,
+      htfIntervalRefCountRef.current[cfg.interval] + delta,
+    );
 
-      if (isNowOn) {
-        // If we already have cached data paint immediately, then start/keep the feed
-        if (htfCacheRef.current[cfg.interval].length > 0) paintOneHtfEma(cfg);
-        void startHtfDataFeed(cfg.interval);
-      } else {
-        // Stop polling only if no other keys on this interval are still enabled
-        if (htfIntervalRefCountRef.current[cfg.interval] === 0) stopHtfDataFeed(cfg.interval);
-      }
-      return next;
-    });
+    if (isNowOn) {
+      // If we already have cached data paint immediately, then start/keep the feed
+      if (htfCacheRef.current[cfg.interval].length > 0) paintOneHtfEma(cfg);
+      void startHtfDataFeed(cfg.interval);
+    } else {
+      // Stop polling only if no other keys on this interval are still enabled
+      if (htfIntervalRefCountRef.current[cfg.interval] === 0) stopHtfDataFeed(cfg.interval);
+    }
   };
 
   /** Full state flush when waking from background tab sleep. */
@@ -1130,6 +1153,22 @@ export default function Chart({
         }
         paintEmas(series);
         repaintAllHtfEmas();
+        if (allowHtfEma) {
+          for (const htfInterval of ["15m", "1h", "4h"] as HtfInterval[]) {
+            if (htfIntervalRefCountRef.current[htfInterval] > 0) {
+              const existingHtf = htfCacheRef.current[htfInterval];
+              if (existingHtf.length > 0 && existingHtf[0]!.time > firstTime) {
+                const endTimeMs = existingHtf[0]!.time * 1000 - 1;
+                void fetchOlderKlines(htfInterval, endTimeMs, 1000, symbol).then((older) => {
+                  if (older.length > 0) {
+                    htfCacheRef.current[htfInterval] = cleanAndSort([...older, ...htfCacheRef.current[htfInterval]]);
+                    repaintHtfInterval(htfInterval);
+                  }
+                }).catch(() => {});
+              }
+            }
+          }
+        }
         if (range) {
           ts.setVisibleLogicalRange({
             from: range.from + cut.length,
@@ -1385,9 +1424,10 @@ export default function Chart({
       if (period >= 50) addEma(period);
     }
 
-    // HTF EMA line series — one per key, all hidden by default, added behind candles.
+    // HTF EMA line series — one per key, added behind candles.
     if (allowHtfEma) {
       for (const cfg of HTF_EMA_CONFIGS) {
+        const isEnabled = Boolean(htfEnabledRef.current[cfg.key]);
         const line = chart.addSeries(LineSeries, {
           color: cfg.color,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1399,9 +1439,18 @@ export default function Chart({
           priceFormat: symbolPriceFormat,
           crosshairMarkerVisible: false,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          visible: false as any,
+          visible: isEnabled as any,
         });
         htfLineRefs.current[cfg.key] = line;
+        if (isEnabled) {
+          htfIntervalRefCountRef.current[cfg.interval] =
+            (htfIntervalRefCountRef.current[cfg.interval] || 0) + 1;
+        }
+      }
+      for (const htfInterval of ["15m", "1h", "4h"] as HtfInterval[]) {
+        if (htfIntervalRefCountRef.current[htfInterval] > 0) {
+          void startHtfDataFeed(htfInterval);
+        }
       }
     }
 

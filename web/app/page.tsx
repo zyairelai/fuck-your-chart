@@ -4,12 +4,38 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ITimeScaleApi, Time } from "lightweight-charts";
 import Chart from "../components/Chart";
 import TopBar from "../components/TopBar";
-import type { TzOffset, Zones, LineToggles, CustomLevel, CustomLevelColor, LinkedCrosshairId, LinkedCrosshairSync } from "../components/Chart";
+import type { TzOffset, Zones, LineToggles, CustomLevel, CustomLevelColor, LinkedCrosshairId, LinkedCrosshairSync, HtfEmaKey } from "../components/Chart";
 import { fetchZones } from "../lib/zones";
 import { play5mCloseAlert, playTestChirp, getAudioContext } from "../lib/audioAlert";
 
 const ALL_EMAS = [10, 20, 50, 200];
 const STORAGE_KEY_CUSTOM_LEVELS = "fuck-your-chart:custom-levels:v1";
+const STORAGE_KEY_HTF_EMA = "fuck-your-chart:htf-ema:v1";
+
+function getLocalHtfEma(): Record<HtfEmaKey, boolean> {
+  if (typeof window === "undefined") {
+    return { "15m200": false, "1h200": false, "4h200": false };
+  }
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY_HTF_EMA);
+    if (!raw) return { "15m200": false, "1h200": false, "4h200": false };
+    const parsed = JSON.parse(raw);
+    return {
+      "15m200": Boolean(parsed["15m200"]),
+      "1h200": Boolean(parsed["1h200"]),
+      "4h200": Boolean(parsed["4h200"]),
+    };
+  } catch {
+    return { "15m200": false, "1h200": false, "4h200": false };
+  }
+}
+
+function setLocalHtfEma(state: Record<HtfEmaKey, boolean>) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(STORAGE_KEY_HTF_EMA, JSON.stringify(state));
+  } catch {}
+}
 
 function getLocalCustomLevels(): CustomLevel[] {
   if (typeof window === "undefined") return [];
@@ -277,6 +303,20 @@ export default function Page() {
   const [levelsEnabledMain, setLevelsEnabledMain] = useState(true);
   const [levelsEnabledHaTop, setLevelsEnabledHaTop] = useState(false);
   const [levelsEnabledHaBottom, setLevelsEnabledHaBottom] = useState(true);
+  const [htfEnabled, setHtfEnabled] = useState<Record<HtfEmaKey, boolean>>({
+    "15m200": false,
+    "1h200": false,
+    "4h200": false,
+  });
+
+  useEffect(() => {
+    setHtfEnabled(getLocalHtfEma());
+  }, []);
+
+  const handleHtfEnabledChange = useCallback((next: Record<HtfEmaKey, boolean>) => {
+    setHtfEnabled(next);
+    setLocalHtfEma(next);
+  }, []);
   const [zones, setZones] = useState<Zones | null>(null);
   const [toggles, setToggles] = useState<LineToggles>(DEFAULT_TOGGLES);
   const [customLevels, setCustomLevels] = useState<CustomLevel[]>([]);
@@ -755,6 +795,8 @@ export default function Page() {
             allowFootprint={true}
             defaultFootprintEnabled={true}
             allowHtfEma={true}
+            htfEnabled={htfEnabled}
+            onHtfEnabledChange={handleHtfEnabledChange}
             levelsEnabled={levelsEnabledMain}
             onLevelsEnabledChange={setLevelsEnabledMain}
             tz={tz}
