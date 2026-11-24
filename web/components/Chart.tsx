@@ -523,6 +523,10 @@ export default function Chart({
   onChartDoubleClickRef.current = onChartDoubleClick;
   const isMaximizedRef = useRef(isMaximized);
   isMaximizedRef.current = isMaximized;
+  const siblingScalesRef = useRef(siblingScales);
+  siblingScalesRef.current = siblingScales;
+  const registerTimeScaleRef = useRef(registerTimeScale);
+  registerTimeScaleRef.current = registerTimeScale;
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const deltaRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   /** Invisible future timestamps so the axis labels 16:00→20:00 without
@@ -1304,9 +1308,6 @@ export default function Chart({
       to: total + futureSlots,
     };
     ts.setVisibleLogicalRange(range);
-    for (const sibling of siblingScales?.current ?? []) {
-      if (sibling !== ts) sibling.setVisibleLogicalRange(range);
-    }
     requestAnimationFrame(() => {
       suppressTimeSyncRef.current = false;
     });
@@ -1529,27 +1530,32 @@ export default function Chart({
       if (tOriginating) return;
       if (suppressTimeSyncRef.current) return;
       if (cacheRef.current.length === 0) return;
+
+      const cached = cacheRef.current;
+      const range = ts.getVisibleLogicalRange();
+      if (!range) return;
+      pinnedToRightRef.current = range.to >= cached.length - 2;
+      if (range.from < 30) {
+        void loadOlderHistoryForChart();
+      }
+
+      // Only sync to sibling time scales when user is actively interacting with THIS chart
+      const siblings = siblingScalesRef.current?.current ?? [];
+      if (!pointerInsideChartRef.current || siblings.length === 0) return;
+
       tOriginating = true;
       try {
-        const siblings = siblingScales?.current ?? [];
-        const range = ts.getVisibleLogicalRange();
-        if (!range) return;
-        const cached = cacheRef.current;
-        pinnedToRightRef.current = range.to >= cached.length - 2;
-        if (range.from < 30) {
-          void loadOlderHistoryForChart();
-        }
         for (const sib of siblings) {
-          if (sib && sib !== ts) sib.setVisibleLogicalRange(range);
+          if (sib && sib !== ts) {
+            sib.setVisibleLogicalRange(range);
+          }
         }
       } finally {
-        setTimeout(() => {
-          tOriginating = false;
-        }, 0);
+        tOriginating = false;
       }
     };
     ts.subscribeVisibleLogicalRangeChange(onTimeRange);
-    registerTimeScale?.(ts);
+    registerTimeScaleRef.current?.(ts);
 
     // OHLC hover legend — find the bar closest to the cursor's time.
     const onCrosshair = (p: MouseEventParams) => {
@@ -1585,6 +1591,9 @@ export default function Chart({
     const onPointerEnter = () => {
       pointerInsideChartRef.current = true;
     };
+    const onPointerDown = () => {
+      pointerInsideChartRef.current = true;
+    };
     const onPointerLeave = () => {
       pointerInsideChartRef.current = false;
       if (deltaHoverRef.current) deltaHoverRef.current.style.display = "none";
@@ -1603,6 +1612,7 @@ export default function Chart({
       }
     };
     containerRef.current?.addEventListener("pointerenter", onPointerEnter);
+    containerRef.current?.addEventListener("pointerdown", onPointerDown);
     containerRef.current?.addEventListener("pointerleave", onPointerLeave);
 
     const syncLinkedCrosshair: LinkedCrosshairSync = (time) => {
@@ -1618,7 +1628,6 @@ export default function Chart({
           ? candleRef.current
           : (futureRef.current ?? candleRef.current);
         if (targetSeries) {
-          pointerInsideChartRef.current = false;
           if (!linkedCrosshairActiveRef.current) {
             linkedCrosshairActiveRef.current = true;
             chart.applyOptions({
@@ -1795,6 +1804,7 @@ export default function Chart({
       el?.removeEventListener("dblclick", onDoubleClick, true);
       el?.removeEventListener("contextmenu", onContext);
       el?.removeEventListener("pointerenter", onPointerEnter);
+      el?.removeEventListener("pointerdown", onPointerDown);
       el?.removeEventListener("pointerleave", onPointerLeave);
       if (copyToastTimerRef.current) clearTimeout(copyToastTimerRef.current);
       if (linkedCrosshairFrameRef.current !== null) {
@@ -1802,12 +1812,12 @@ export default function Chart({
         linkedCrosshairFrameRef.current = null;
       }
       pendingLinkedCrosshairRef.current = null;
-      const sibs = siblingScales?.current;
+      const sibs = siblingScalesRef.current?.current;
       if (sibs) {
         const i = sibs.indexOf(ts);
         if (i >= 0) sibs.splice(i, 1);
       }
-      registerTimeScale?.(null);
+      registerTimeScaleRef.current?.(null);
       if (linkedCrosshairId) {
         registerLinkedCrosshair?.(linkedCrosshairId, null);
       }

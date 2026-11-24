@@ -788,7 +788,7 @@ export default function Page() {
       <main className={`page${switchedLayout ? " switched" : ""}${maximizedChart ? ` maximized-${maximizedChart}` : ""}`}>
         <div className="cell chart-main">
           <Chart
-            key={`raw-${symbol}-${rawInterval}`}
+            key={`raw-${symbol}-${rawInterval}-${isSynchronized}`}
             symbol={symbol}
             interval={rawInterval}
             emas={ALL_EMAS}
@@ -818,7 +818,7 @@ export default function Page() {
         </div>
         <div className="cell chart-ha-top">
           <Chart
-            key={`ha-top-${symbol}-${topHaInterval}`}
+            key={`ha-top-${symbol}-${topHaInterval}-${isSynchronized}`}
             symbol={symbol}
             interval={topHaInterval}
             heikin

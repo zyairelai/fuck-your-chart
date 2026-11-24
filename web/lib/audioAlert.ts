@@ -1,9 +1,11 @@
 /**
- * Web Audio API synthesizer for trading alerts.
- * Generates alert tones using browser native oscillators — no external MP3/WAV files required.
+ * Audio alerts for trading candle closes.
+ * - :00, :15, :30, :45 -> Plays /westminster-chime-melody-128.mp3 directly.
+ * - :05, :10, :20, :25, :35, :40, :50, :55 -> Plays sharp 5m beep.
  */
 
 let sharedAudioContext: AudioContext | null = null;
+let westminsterAudio: HTMLAudioElement | null = null;
 
 export function getAudioContext(): AudioContext | null {
   if (typeof window === "undefined") return null;
@@ -32,27 +34,29 @@ export function play5mCloseAlert() {
 }
 
 /**
- * Westminster Quarters chime for 15-minute boundaries (:00, :15, :30, :45).
- * Synthesizes 4-note bell chime in Key of E (G#4 -> F#4 -> E4 -> B3) with resonant bell harmonics.
+ * Plays westminster-chime-melody-128.mp3 directly for 15-minute boundaries (:00, :15, :30, :45).
  */
 export function playWestminsterChime() {
-  const ctx = getAudioContext();
-  if (!ctx) return;
-  const start = ctx.currentTime;
-
-  // Classic Westminster Quarters 1st phrase in Key of E
-  const notes = [415.3, 369.99, 329.63, 246.94];
-  const step = 0.52; // note spacing
-
-  notes.forEach((freq, idx) => {
-    const noteTime = start + idx * step;
-    playBellTone(ctx, freq, noteTime, 1.25);
-  });
+  if (typeof window === "undefined") return;
+  try {
+    if (!westminsterAudio) {
+      westminsterAudio = new Audio("/westminster-chime-melody-128.mp3");
+    }
+    westminsterAudio.currentTime = 0;
+    const playPromise = westminsterAudio.play();
+    if (playPromise !== undefined) {
+      playPromise.catch((err) => {
+        console.warn("[audio] direct play of westminster mp3 was prevented:", err);
+      });
+    }
+  } catch (err) {
+    console.error("[audio] failed to play westminster mp3:", err);
+  }
 }
 
 /**
  * Plays the appropriate candle close alert:
- * - :00, :15, :30, :45 -> Westminster chime
+ * - :00, :15, :30, :45 -> Westminster chime MP3 directly
  * - :05, :10, :20, :25, :35, :40, :50, :55 -> Standard sharp 5m beep
  */
 export function playCandleCloseAlert(timestamp = Date.now()) {
@@ -86,38 +90,4 @@ function playSharpBeep(durationSeconds = 0.40) {
 
   osc.start(now);
   osc.stop(now + durationSeconds + 0.01);
-}
-
-function playBellTone(ctx: AudioContext, freq: number, startTime: number, decayDuration = 1.25) {
-  // Fundamental tone (warm bell body)
-  createHarmonic(ctx, freq, startTime, 0.18, decayDuration);
-  // 2nd harmonic / octave (bright brass ring)
-  createHarmonic(ctx, freq * 2, startTime, 0.07, decayDuration * 0.7);
-  // 3rd harmonic (bell strike chime tap)
-  createHarmonic(ctx, freq * 3, startTime, 0.025, decayDuration * 0.35);
-}
-
-function createHarmonic(
-  ctx: AudioContext,
-  freq: number,
-  startTime: number,
-  peakGain: number,
-  decayDuration: number
-) {
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-
-  osc.type = "sine";
-  osc.frequency.setValueAtTime(freq, startTime);
-
-  // Fast strike attack, then natural exponential decay
-  gain.gain.setValueAtTime(0.0001, startTime);
-  gain.gain.linearRampToValueAtTime(peakGain, startTime + 0.004);
-  gain.gain.exponentialRampToValueAtTime(0.0001, startTime + decayDuration);
-
-  osc.connect(gain);
-  gain.connect(ctx.destination);
-
-  osc.start(startTime);
-  osc.stop(startTime + decayDuration + 0.05);
 }
