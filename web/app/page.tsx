@@ -6,7 +6,7 @@ import Chart from "../components/Chart";
 import TopBar from "../components/TopBar";
 import type { TzOffset, Zones, LineToggles, CustomLevel, CustomLevelColor, LinkedCrosshairId, LinkedCrosshairSync, HtfEmaKey } from "../components/Chart";
 import { fetchZones } from "../lib/zones";
-import { play5mCloseAlert, playTestChirp, getAudioContext } from "../lib/audioAlert";
+import { playCandleCloseAlert, playTestChirp, getAudioContext } from "../lib/audioAlert";
 
 const ALL_EMAS = [10, 20, 50, 200];
 const STORAGE_KEY_CUSTOM_LEVELS = "fuck-your-chart:custom-levels:v1";
@@ -358,7 +358,7 @@ export default function Page() {
         const barTimestamp = Math.floor(currentNow / stepMs) * stepMs;
         if (lastBeepedBar !== barTimestamp) {
           lastBeepedBar = barTimestamp;
-          play5mCloseAlert();
+          playCandleCloseAlert(barTimestamp);
         }
         scheduleNextBeep();
       }, msUntilClose);
@@ -375,7 +375,7 @@ export default function Page() {
         const barTimestamp = Math.floor(now / stepMs) * stepMs;
         if (lastBeepedBar !== barTimestamp) {
           lastBeepedBar = barTimestamp;
-          play5mCloseAlert();
+          playCandleCloseAlert(barTimestamp);
         }
       }
     }, 100);
