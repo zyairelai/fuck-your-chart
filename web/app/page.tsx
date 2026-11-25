@@ -6,7 +6,7 @@ import Chart from "../components/Chart";
 import TopBar from "../components/TopBar";
 import type { TzOffset, Zones, LineToggles, CustomLevel, CustomLevelColor, LinkedCrosshairId, LinkedCrosshairSync, HtfEmaKey } from "../components/Chart";
 import { fetchZones } from "../lib/zones";
-import { playCandleCloseAlert, playTestChirp, getAudioContext } from "../lib/audioAlert";
+import { playCandleCloseAlert, playTestChirp, getAudioContext, preloadWestminsterChime } from "../lib/audioAlert";
 
 const ALL_EMAS = [10, 20, 50, 200];
 const STORAGE_KEY_CUSTOM_LEVELS = "fuck-your-chart:custom-levels:v1";
@@ -332,6 +332,9 @@ export default function Page() {
       if (next) {
         getAudioContext();
         playTestChirp();
+        // Pre-decode the Westminster MP3 into the AudioContext buffer while user interaction
+        // is still fresh — avoids any autoplay block when the chime fires later.
+        preloadWestminsterChime();
       }
       return next;
     });

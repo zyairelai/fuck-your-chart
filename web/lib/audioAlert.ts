@@ -1,11 +1,14 @@
 /**
  * Audio alerts for trading candle closes.
- * - :00, :15, :30, :45 -> Plays /westminster-chime-melody-128.mp3 directly.
+ * - :00, :15, :30, :45 -> Plays /westminster-chime-melody-128.mp3 via AudioContext (decoded buffer).
  * - :05, :10, :20, :25, :35, :40, :50, :55 -> Plays sharp 5m beep.
  */
 
 let sharedAudioContext: AudioContext | null = null;
-let westminsterAudio: HTMLAudioElement | null = null;
+
+// Decoded AudioBuffer cache for the Westminster chime MP3
+let westminsterBuffer: AudioBuffer | null = null;
+let westminsterLoading = false;
 
 export function getAudioContext(): AudioContext | null {
   if (typeof window === "undefined") return null;
@@ -23,6 +26,25 @@ export function getAudioContext(): AudioContext | null {
   return sharedAudioContext;
 }
 
+/** Pre-fetch and decode the Westminster MP3 into the shared AudioContext buffer. */
+export function preloadWestminsterChime(): void {
+  if (westminsterBuffer || westminsterLoading) return;
+  const ctx = getAudioContext();
+  if (!ctx) return;
+  westminsterLoading = true;
+  fetch("/westminster-chime-melody-128.mp3")
+    .then((res) => res.arrayBuffer())
+    .then((buf) => ctx.decodeAudioData(buf))
+    .then((decoded) => {
+      westminsterBuffer = decoded;
+      westminsterLoading = false;
+    })
+    .catch((err) => {
+      console.warn("[audio] failed to preload westminster mp3:", err);
+      westminsterLoading = false;
+    });
+}
+
 /** Quick test beep when user toggles the alert ON — 350ms sharp square wave at 1000 Hz. */
 export function playTestChirp() {
   playSharpBeep(0.35);
@@ -34,23 +56,34 @@ export function play5mCloseAlert() {
 }
 
 /**
- * Plays westminster-chime-melody-128.mp3 directly for 15-minute boundaries (:00, :15, :30, :45).
+ * Plays westminster-chime-melody-128.mp3 through the AudioContext for 15-minute boundaries
+ * (:00, :15, :30, :45). Using the same AudioContext as the beep avoids browser autoplay blocks.
  */
 export function playWestminsterChime() {
-  if (typeof window === "undefined") return;
-  try {
-    if (!westminsterAudio) {
-      westminsterAudio = new Audio("/westminster-chime-melody-128.mp3");
-    }
-    westminsterAudio.currentTime = 0;
-    const playPromise = westminsterAudio.play();
-    if (playPromise !== undefined) {
-      playPromise.catch((err) => {
-        console.warn("[audio] direct play of westminster mp3 was prevented:", err);
+  const ctx = getAudioContext();
+  if (!ctx) return;
+
+  if (westminsterBuffer) {
+    // Buffer already decoded — play immediately
+    const source = ctx.createBufferSource();
+    source.buffer = westminsterBuffer;
+    source.connect(ctx.destination);
+    source.start(0);
+  } else {
+    // Not loaded yet — fetch, decode, then play
+    fetch("/westminster-chime-melody-128.mp3")
+      .then((res) => res.arrayBuffer())
+      .then((buf) => ctx.decodeAudioData(buf))
+      .then((decoded) => {
+        westminsterBuffer = decoded;
+        const source = ctx.createBufferSource();
+        source.buffer = decoded;
+        source.connect(ctx.destination);
+        source.start(0);
+      })
+      .catch((err) => {
+        console.warn("[audio] failed to load/play westminster mp3:", err);
       });
-    }
-  } catch (err) {
-    console.error("[audio] failed to play westminster mp3:", err);
   }
 }
 
