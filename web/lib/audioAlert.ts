@@ -4,6 +4,10 @@
  * - :05, :10, :20, :25, :35, :40, :50, :55 -> Plays sharp 5m beep.
  */
 
+// On GitHub Pages the site lives at /<repoName>/ — Next.js bakes the basePath into
+// NEXT_PUBLIC_BASE_PATH at build time so fetch() uses the correct absolute URL.
+const BASE_PATH: string = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+
 let sharedAudioContext: AudioContext | null = null;
 
 // Decoded AudioBuffer cache for the Westminster chime MP3
@@ -32,7 +36,7 @@ export function preloadWestminsterChime(): void {
   const ctx = getAudioContext();
   if (!ctx) return;
   westminsterLoading = true;
-  fetch("/westminster-chime-melody-128.mp3")
+  fetch(`${BASE_PATH}/westminster-chime-melody-128.mp3`)
     .then((res) => res.arrayBuffer())
     .then((buf) => ctx.decodeAudioData(buf))
     .then((decoded) => {
@@ -71,7 +75,7 @@ export function playWestminsterChime() {
     source.start(0);
   } else {
     // Not loaded yet — fetch, decode, then play
-    fetch("/westminster-chime-melody-128.mp3")
+    fetch(`${BASE_PATH}/westminster-chime-melody-128.mp3`)
       .then((res) => res.arrayBuffer())
       .then((buf) => ctx.decodeAudioData(buf))
       .then((decoded) => {

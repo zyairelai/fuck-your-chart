@@ -17,6 +17,10 @@ const nextConfig = {
     unoptimized: true,
   },
   eslint: { ignoreDuringBuilds: true },
+  // Expose basePath to client-side code so fetch() can use the correct URL
+  env: {
+    NEXT_PUBLIC_BASE_PATH: basePath,
+  },
 };
 
 export default nextConfig;
