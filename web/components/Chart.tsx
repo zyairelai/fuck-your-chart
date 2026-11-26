@@ -1089,6 +1089,9 @@ export default function Chart({
     if (!candleRef.current || series.length === 0) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     candleRef.current.setData(series as any);
+    // Re-assert autoScale after setData() to prevent LWC from locking the
+    // price axis at a stale range (same fix as in updateWithLatestBars).
+    rightScaleRef.current?.applyOptions({ autoScale: true });
     if (footprintEnabledRef.current && deltaRef.current) {
       deltaRef.current.setData(raw.map((bar) => {
         const value = candleDelta(bar);
@@ -1236,6 +1239,10 @@ export default function Chart({
     if (!tabHiddenRef.current) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       candleRef.current.setData(series as any);
+      // LWC's setData() can silently disable autoScale on the price axis.
+      // Re-assert it every tick so the visible-range scale keeps following
+      // new candles even after the user hits "Reset Price Scale".
+      rightScaleRef.current?.applyOptions({ autoScale: true });
       if (footprintEnabledRef.current && deltaRef.current) {
         deltaRef.current.setData(merged.map((b) => {
           const dv = candleDelta(b);
