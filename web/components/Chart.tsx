@@ -415,24 +415,26 @@ export type LinkedCrosshairId = "raw" | "heikin";
 export type LinkedCrosshairSync = (time: number | null) => void;
 
 // ---- HTF (Higher-Timeframe) EMA types & config ----
-// 3 individual toggles: 15m200, 1h200, 4h200.
-export type HtfEmaKey = "15m200" | "1h200" | "4h200";
-export type HtfInterval = "15m" | "1h" | "4h";
+// 4 individual toggles: 5m150, 15m200, 1h200, 4h200.
+export type HtfEmaKey = "5m150" | "15m200" | "1h200" | "4h200";
+export type HtfInterval = "5m" | "15m" | "1h" | "4h";
 export interface HtfEmaConfig {
   key: HtfEmaKey;
   interval: HtfInterval;
-  period: 50 | 200;
+  period: 50 | 150 | 200;
   color: string;
   label: string;
 }
 export const HTF_EMA_CONFIGS: HtfEmaConfig[] = [
+  { key: "5m150", interval: "5m", period: 150, color: "#26c6da", label: "5m" },
   { key: "15m200", interval: "15m", period: 200, color: "#42a5f5", label: "15m" },
   { key: "1h200", interval: "1h", period: 200, color: "#ab47bc", label: "1h" },
   { key: "4h200", interval: "4h", period: 200, color: "#ef5350", label: "4h" },
 ];
-export const HTF_INTERVAL_STEP: Record<HtfInterval, number> = { "15m": 900, "1h": 3600, "4h": 14400 };
+export const HTF_INTERVAL_STEP: Record<HtfInterval, number> = { "5m": 300, "15m": 900, "1h": 3600, "4h": 14400 };
 
 export const makeHtfEnabledDefault = (): Record<HtfEmaKey, boolean> => ({
+  "5m150": false,
   "15m200": false,
   "1h200": false,
   "4h200": false,
@@ -483,6 +485,10 @@ interface Props {
   onRegisterScreenshot?: (getScreenshot: (() => HTMLCanvasElement | null) | null) => void;
   isMaximized?: boolean;
   onToggleMaximize?: () => void;
+  /** Called after "Reset Price Scale" so the caller can reset sibling charts too. */
+  onResetView?: () => void;
+  /** Called on mount/unmount so the parent can invoke resetView() imperatively on a sibling. */
+  registerResetView?: (fn: (() => void) | null) => void;
 }
 
 export default function Chart({
@@ -514,6 +520,8 @@ export default function Chart({
   onRegisterScreenshot,
   isMaximized = false,
   onToggleMaximize,
+  onResetView,
+  registerResetView,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -589,13 +597,13 @@ export default function Chart({
   /** One line series per HTF EMA key. */
   const htfLineRefs = useRef<Partial<Record<HtfEmaKey, ISeriesApi<"Line">>>>({});
   /** Raw kline cache per HTF interval (shared between keys of same TF). */
-  const htfCacheRef = useRef<Record<HtfInterval, Kline[]>>({ "15m": [], "1h": [], "4h": [] });
+  const htfCacheRef = useRef<Record<HtfInterval, Kline[]>>({ "5m": [], "15m": [], "1h": [], "4h": [] });
   /** Whether the initial HTF data fetch is in-flight. */
-  const htfLoadingRef = useRef<Record<HtfInterval, boolean>>({ "15m": false, "1h": false, "4h": false });
+  const htfLoadingRef = useRef<Record<HtfInterval, boolean>>({ "5m": false, "15m": false, "1h": false, "4h": false });
   /** Poll timer IDs per HTF interval. */
-  const htfPollTimerRef = useRef<Record<HtfInterval, ReturnType<typeof setTimeout> | null>>({ "15m": null, "1h": null, "4h": null });
+  const htfPollTimerRef = useRef<Record<HtfInterval, ReturnType<typeof setTimeout> | null>>({ "5m": null, "15m": null, "1h": null, "4h": null });
   /** How many individual keys are currently enabled per interval (to know when to stop polling). */
-  const htfIntervalRefCountRef = useRef<Record<HtfInterval, number>>({ "15m": 0, "1h": 0, "4h": 0 });
+  const htfIntervalRefCountRef = useRef<Record<HtfInterval, number>>({ "5m": 0, "15m": 0, "1h": 0, "4h": 0 });
 
   const updateZoneLabelVisibility = () => {
     const pane = chartRef.current?.panes()[0]?.getHTMLElement();
@@ -1161,7 +1169,7 @@ export default function Chart({
         paintEmas(series);
         repaintAllHtfEmas();
         if (allowHtfEma) {
-          for (const htfInterval of ["15m", "1h", "4h"] as HtfInterval[]) {
+          for (const htfInterval of ["5m", "15m", "1h", "4h"] as HtfInterval[]) {
             if (htfIntervalRefCountRef.current[htfInterval] > 0) {
               const existingHtf = htfCacheRef.current[htfInterval];
               if (existingHtf.length > 0 && existingHtf[0]!.time > firstTime) {
@@ -1455,7 +1463,7 @@ export default function Chart({
             (htfIntervalRefCountRef.current[cfg.interval] || 0) + 1;
         }
       }
-      for (const htfInterval of ["15m", "1h", "4h"] as HtfInterval[]) {
+      for (const htfInterval of ["5m", "15m", "1h", "4h"] as HtfInterval[]) {
         if (htfIntervalRefCountRef.current[htfInterval] > 0) {
           void startHtfDataFeed(htfInterval);
         }
@@ -1563,6 +1571,7 @@ export default function Chart({
     };
     ts.subscribeVisibleLogicalRangeChange(onTimeRange);
     registerTimeScaleRef.current?.(ts);
+    registerResetView?.(applyDefaultView);
 
     // OHLC hover legend — find the bar closest to the cursor's time.
     const onCrosshair = (p: MouseEventParams) => {
@@ -1825,11 +1834,12 @@ export default function Chart({
         if (i >= 0) sibs.splice(i, 1);
       }
       registerTimeScaleRef.current?.(null);
+      registerResetView?.(null);
       if (linkedCrosshairId) {
         registerLinkedCrosshair?.(linkedCrosshairId, null);
       }
       // Clean up HTF EMA poll timers
-      for (const htfInterval of ["15m", "1h", "4h"] as HtfInterval[]) {
+      for (const htfInterval of ["5m", "15m", "1h", "4h"] as HtfInterval[]) {
         stopHtfDataFeed(htfInterval);
       }
       if (onRegisterScreenshotRef.current) {
@@ -2238,6 +2248,7 @@ export default function Chart({
             className="context-menu-item"
             onClick={() => {
               resetView();
+              onResetView?.();
               setContextMenu(null);
             }}
           >

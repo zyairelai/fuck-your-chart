@@ -14,19 +14,20 @@ const STORAGE_KEY_HTF_EMA = "fuck-your-chart:htf-ema:v1";
 
 function getLocalHtfEma(): Record<HtfEmaKey, boolean> {
   if (typeof window === "undefined") {
-    return { "15m200": false, "1h200": false, "4h200": false };
+    return { "5m150": false, "15m200": false, "1h200": false, "4h200": false };
   }
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY_HTF_EMA);
-    if (!raw) return { "15m200": false, "1h200": false, "4h200": false };
+    if (!raw) return { "5m150": false, "15m200": false, "1h200": false, "4h200": false };
     const parsed = JSON.parse(raw);
     return {
+      "5m150": Boolean(parsed["5m150"]),
       "15m200": Boolean(parsed["15m200"]),
       "1h200": Boolean(parsed["1h200"]),
       "4h200": Boolean(parsed["4h200"]),
     };
   } catch {
-    return { "15m200": false, "1h200": false, "4h200": false };
+    return { "5m150": false, "15m200": false, "1h200": false, "4h200": false };
   }
 }
 
@@ -236,6 +237,10 @@ export default function Page() {
     heikin: null,
   });
 
+  /** Imperative handles so each chart can trigger resetView() on its sibling. */
+  const rawResetViewRef = useRef<(() => void) | null>(null);
+  const haTopResetViewRef = useRef<(() => void) | null>(null);
+
   const registerLinkedTime = (api: ITimeScaleApi<Time> | null) => {
     if (api && !linkedTimeScales.current.includes(api)) {
       linkedTimeScales.current.push(api);
@@ -255,6 +260,10 @@ export default function Page() {
   const handleTimeframeChange = (tf: string | null) => {
     linkedTimeScales.current = [];
     linkedCrosshairSync.current = { raw: null, heikin: null };
+    // Reset HTF EMA chips to off whenever the timeframe changes.
+    const allOff: Record<HtfEmaKey, boolean> = { "5m150": false, "15m200": false, "1h200": false, "4h200": false };
+    setHtfEnabled(allOff);
+    setLocalHtfEma(allOff);
     if (maximizedChart !== null) {
       setSingleTimeframe(tf);
     } else {
@@ -304,6 +313,7 @@ export default function Page() {
   const [levelsEnabledHaTop, setLevelsEnabledHaTop] = useState(false);
   const [levelsEnabledHaBottom, setLevelsEnabledHaBottom] = useState(true);
   const [htfEnabled, setHtfEnabled] = useState<Record<HtfEmaKey, boolean>>({
+    "5m150": false,
     "15m200": false,
     "1h200": false,
     "4h200": false,
@@ -817,6 +827,8 @@ export default function Page() {
             linkedCrosshairId={isSynchronized ? "raw" : undefined}
             registerLinkedCrosshair={isSynchronized ? registerLinkedCrosshair : undefined}
             onLinkedCrosshair={isSynchronized ? syncLinkedCrosshair : undefined}
+            registerResetView={(fn) => { rawResetViewRef.current = fn; }}
+            onResetView={() => { haTopResetViewRef.current?.(); }}
           />
         </div>
         <div className="cell chart-ha-top">
@@ -845,6 +857,8 @@ export default function Page() {
             linkedCrosshairId={isSynchronized ? "heikin" : undefined}
             registerLinkedCrosshair={isSynchronized ? registerLinkedCrosshair : undefined}
             onLinkedCrosshair={isSynchronized ? syncLinkedCrosshair : undefined}
+            registerResetView={(fn) => { haTopResetViewRef.current = fn; }}
+            onResetView={() => { rawResetViewRef.current?.(); }}
           />
         </div>
         <div className="cell chart-ha-bottom">
