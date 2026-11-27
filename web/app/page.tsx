@@ -828,7 +828,7 @@ export default function Page() {
             registerLinkedCrosshair={isSynchronized ? registerLinkedCrosshair : undefined}
             onLinkedCrosshair={isSynchronized ? syncLinkedCrosshair : undefined}
             registerResetView={(fn) => { rawResetViewRef.current = fn; }}
-            onResetView={() => { haTopResetViewRef.current?.(); }}
+            onResetView={isSynchronized ? () => { haTopResetViewRef.current?.(); } : undefined}
           />
         </div>
         <div className="cell chart-ha-top">
@@ -858,7 +858,7 @@ export default function Page() {
             registerLinkedCrosshair={isSynchronized ? registerLinkedCrosshair : undefined}
             onLinkedCrosshair={isSynchronized ? syncLinkedCrosshair : undefined}
             registerResetView={(fn) => { haTopResetViewRef.current = fn; }}
-            onResetView={() => { rawResetViewRef.current?.(); }}
+            onResetView={isSynchronized ? () => { rawResetViewRef.current?.(); } : undefined}
           />
         </div>
         <div className="cell chart-ha-bottom">
