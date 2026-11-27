@@ -563,6 +563,10 @@ export default function Chart({
   /** True while the user's visible range covers the latest bar. When the user
    *  drags left into history we set this to false and stop auto-following. */
   const pinnedToRightRef = useRef(true);
+  /** True after the user manually drags the price-scale axis. Cleared only
+   *  when applyDefaultView() runs (explicit reset). While set we skip the
+   *  autoScale re-assertion so the user's custom zoom is preserved. */
+  const priceScaleUserAdjustedRef = useRef(false);
   const pointerInsideChartRef = useRef(false);
   const suppressTimeSyncRef = useRef(false);
   const suppressLinkedCrosshairRef = useRef(false);
@@ -1099,7 +1103,9 @@ export default function Chart({
     candleRef.current.setData(series as any);
     // Re-assert autoScale after setData() to prevent LWC from locking the
     // price axis at a stale range (same fix as in updateWithLatestBars).
-    rightScaleRef.current?.applyOptions({ autoScale: true });
+    if (!priceScaleUserAdjustedRef.current) {
+      rightScaleRef.current?.applyOptions({ autoScale: true });
+    }
     if (footprintEnabledRef.current && deltaRef.current) {
       deltaRef.current.setData(raw.map((bar) => {
         const value = candleDelta(bar);
@@ -1250,7 +1256,11 @@ export default function Chart({
       // LWC's setData() can silently disable autoScale on the price axis.
       // Re-assert it every tick so the visible-range scale keeps following
       // new candles even after the user hits "Reset Price Scale".
-      rightScaleRef.current?.applyOptions({ autoScale: true });
+      // Skip if the user has manually adjusted the price scale — their custom
+      // zoom should be preserved until they explicitly reset.
+      if (!priceScaleUserAdjustedRef.current) {
+        rightScaleRef.current?.applyOptions({ autoScale: true });
+      }
       if (footprintEnabledRef.current && deltaRef.current) {
         deltaRef.current.setData(merged.map((b) => {
           const dv = candleDelta(b);
@@ -1299,6 +1309,9 @@ export default function Chart({
 
     suppressTimeSyncRef.current = true;
     pinnedToRightRef.current = true;
+    // User explicitly reset — clear the manual-adjustment flag so autoScale
+    // re-assertions resume on the next data tick.
+    priceScaleUserAdjustedRef.current = false;
     rightScaleRef.current?.setAutoScale(true);
     rightScaleRef.current?.applyOptions({
       autoScale: true,
@@ -1610,6 +1623,18 @@ export default function Chart({
     const onPointerDown = () => {
       pointerInsideChartRef.current = true;
     };
+    // Detect when the user clicks/drags the price-scale axis (right ~65 px).
+    // We flag priceScaleUserAdjustedRef so the autoScale re-assertion is
+    // suppressed and the user's custom zoom survives the next data poll.
+    const onPriceScalePointerDown = (e: PointerEvent) => {
+      const containerEl = containerRef.current;
+      if (!containerEl) return;
+      const rect = containerEl.getBoundingClientRect();
+      const xFromRight = rect.right - e.clientX;
+      if (xFromRight >= 0 && xFromRight <= 70) {
+        priceScaleUserAdjustedRef.current = true;
+      }
+    };
     const onPointerLeave = () => {
       pointerInsideChartRef.current = false;
       if (deltaHoverRef.current) deltaHoverRef.current.style.display = "none";
@@ -1630,6 +1655,7 @@ export default function Chart({
     containerRef.current?.addEventListener("pointerenter", onPointerEnter);
     containerRef.current?.addEventListener("pointerdown", onPointerDown);
     containerRef.current?.addEventListener("pointerleave", onPointerLeave);
+    containerRef.current?.addEventListener("pointerdown", onPriceScalePointerDown);
 
     const syncLinkedCrosshair: LinkedCrosshairSync = (time) => {
       const generation = ++linkedCrosshairGenerationRef.current;
@@ -1822,6 +1848,7 @@ export default function Chart({
       el?.removeEventListener("pointerenter", onPointerEnter);
       el?.removeEventListener("pointerdown", onPointerDown);
       el?.removeEventListener("pointerleave", onPointerLeave);
+      el?.removeEventListener("pointerdown", onPriceScalePointerDown);
       if (copyToastTimerRef.current) clearTimeout(copyToastTimerRef.current);
       if (linkedCrosshairFrameRef.current !== null) {
         cancelAnimationFrame(linkedCrosshairFrameRef.current);
