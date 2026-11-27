@@ -25,6 +25,7 @@ import {
   seedHistory,
   type Kline,
 } from "../lib/historyStore";
+import type { EmaAlert, PriceAlert } from "../lib/alertStore";
 
 // ---------------------------------------------------------------------------
 // DailyOpenPrimitive — draws a vertical dotted line at every UTC 00:00 boundary
@@ -489,6 +490,20 @@ interface Props {
   onResetView?: () => void;
   /** Called on mount/unmount so the parent can invoke resetView() imperatively on a sibling. */
   registerResetView?: (fn: (() => void) | null) => void;
+
+  // ---- Alert props (only wired in default layout mode) ----
+  /** EMA alerts active on this chart instance. */
+  emaAlerts?: EmaAlert[];
+  /** Price-level alerts (raw chart only). */
+  priceAlerts?: PriceAlert[];
+  /** True when this chart should show price-level alert options in the context menu. */
+  allowPriceAlerts?: boolean;
+  onSetEmaAlert?: (period: number) => void;
+  onCancelEmaAlert?: (period: number) => void;
+  onSetPriceAlert?: (price: number, label: string) => void;
+  onCancelPriceAlert?: (price: number) => void;
+  /** Fired when an alert level is touched; parent plays TTS and removes the alert. */
+  onAlertTriggered?: (id: string, speechText: string) => void;
 }
 
 export default function Chart({
@@ -522,6 +537,14 @@ export default function Chart({
   onToggleMaximize,
   onResetView,
   registerResetView,
+  emaAlerts,
+  priceAlerts,
+  allowPriceAlerts = false,
+  onSetEmaAlert,
+  onCancelEmaAlert,
+  onSetPriceAlert,
+  onCancelPriceAlert,
+  onAlertTriggered,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -555,7 +578,7 @@ export default function Chart({
     price: number;
     labelVisible: boolean;
   }[]>([]);
-  const copyableZonePricesRef = useRef<number[]>([]);
+  const copyableZonePricesRef = useRef<{ price: number; label: string; isCustom: boolean }[]>([]);
   const zoneLabelFrameRef = useRef<number | null>(null);
 
   const lastHaRef = useRef<{ open: number; close: number } | null>(null);
@@ -567,6 +590,32 @@ export default function Chart({
    *  when applyDefaultView() runs (explicit reset). While set we skip the
    *  autoScale re-assertion so the user's custom zoom is preserved. */
   const priceScaleUserAdjustedRef = useRef(false);
+
+  // ---- Alert refs ----
+  /** Live EMA value for each period (last bar, including live candle). Updated in paintEmas. */
+  const currentEmaValuesRef = useRef<Map<number, number>>(new Map());
+  /** Active EMA alerts for this chart (kept in sync with the emaAlerts prop). */
+  const emaAlertsRef = useRef<EmaAlert[]>(emaAlerts ?? []);
+  emaAlertsRef.current = emaAlerts ?? [];
+  /** Active price-level alerts (kept in sync with the priceAlerts prop). */
+  const priceAlertsRef = useRef<PriceAlert[]>(priceAlerts ?? []);
+  priceAlertsRef.current = priceAlerts ?? [];
+  /** IDs of alerts already fired this session — prevents double-fire within the 2-s poll window. */
+  const firedAlertIdsRef = useRef<Set<string>>(new Set());
+  /** Becomes true ~3 s after mount so we don't false-trigger on initial load. */
+  const alertReadyRef = useRef(false);
+  const allowPriceAlertsRef = useRef(allowPriceAlerts);
+  allowPriceAlertsRef.current = allowPriceAlerts;
+  const onSetEmaAlertRef = useRef(onSetEmaAlert);
+  onSetEmaAlertRef.current = onSetEmaAlert;
+  const onCancelEmaAlertRef = useRef(onCancelEmaAlert);
+  onCancelEmaAlertRef.current = onCancelEmaAlert;
+  const onSetPriceAlertRef = useRef(onSetPriceAlert);
+  onSetPriceAlertRef.current = onSetPriceAlert;
+  const onCancelPriceAlertRef = useRef(onCancelPriceAlert);
+  onCancelPriceAlertRef.current = onCancelPriceAlert;
+  const onAlertTriggeredRef = useRef(onAlertTriggered);
+  onAlertTriggeredRef.current = onAlertTriggered;
   const pointerInsideChartRef = useRef(false);
   const suppressTimeSyncRef = useRef(false);
   const suppressLinkedCrosshairRef = useRef(false);
@@ -654,6 +703,8 @@ export default function Chart({
     x: number;
     y: number;
     customLevel?: CustomLevel | null;
+    emaContext?: { period: number; hasAlert: boolean; interval: string } | null;
+    priceContext?: { price: number; hasAlert: boolean; label: string } | null;
   } | null>(null);
   const [editingLevel, setEditingLevel] = useState(false);
   const [editPriceInput, setEditPriceInput] = useState("");
@@ -886,6 +937,9 @@ export default function Chart({
       const smoothed = ema(values, period);
       const closedEma = smoothed[closedIdx] ?? smoothed[smoothed.length - 1]!;
       lastClosedEmaRef.current.set(period, closedEma);
+      // Track the live (last-bar) EMA value for alert proximity checks.
+      const liveEma = smoothed[smoothed.length - 1];
+      if (liveEma != null) currentEmaValuesRef.current.set(period, liveEma);
 
       if (!line) continue;
       if (!enabled.has(period)) {
@@ -1028,7 +1082,7 @@ export default function Chart({
             if (olderHtf.length > 0) {
               allHtf = cleanAndSort([...olderHtf, ...allHtf]);
             }
-          } catch {}
+          } catch { }
         }
         htfCacheRef.current[htfInterval] = allHtf;
         repaintHtfInterval(htfInterval);
@@ -1185,7 +1239,7 @@ export default function Chart({
                     htfCacheRef.current[htfInterval] = cleanAndSort([...older, ...htfCacheRef.current[htfInterval]]);
                     repaintHtfInterval(htfInterval);
                   }
-                }).catch(() => {});
+                }).catch(() => { });
               }
             }
           }
@@ -1290,6 +1344,41 @@ export default function Chart({
             from: range.from + newBarCount,
             to: range.to + newBarCount,
           });
+        }
+      }
+    }
+
+    // --- Alert checking (runs regardless of tab visibility) ---
+    if (alertReadyRef.current && series.length > 0) {
+      const liveRaw = merged[merged.length - 1]!;
+      const liveDisplay = series[series.length - 1]!;
+
+      // Drop fired IDs for alerts that have already been removed from state
+      const activeIds = new Set([
+        ...emaAlertsRef.current.map((a) => a.id),
+        ...priceAlertsRef.current.map((a) => a.id),
+      ]);
+      for (const id of firedAlertIdsRef.current) {
+        if (!activeIds.has(id)) firedAlertIdsRef.current.delete(id);
+      }
+
+      // EMA alerts — check if the live candle's range covers the EMA level
+      for (const alert of emaAlertsRef.current) {
+        if (firedAlertIdsRef.current.has(alert.id)) continue;
+        const emaVal = currentEmaValuesRef.current.get(alert.period);
+        if (emaVal == null) continue;
+        if (liveDisplay.low <= emaVal && emaVal <= liveDisplay.high) {
+          firedAlertIdsRef.current.add(alert.id);
+          onAlertTriggeredRef.current?.(alert.id, alert.speechText);
+        }
+      }
+
+      // Price alerts — check raw bar's range (actual market price)
+      for (const alert of priceAlertsRef.current) {
+        if (firedAlertIdsRef.current.has(alert.id)) continue;
+        if (liveRaw.low <= alert.price && alert.price <= liveRaw.high) {
+          firedAlertIdsRef.current.add(alert.id);
+          onAlertTriggeredRef.current?.(alert.id, alert.speechText);
         }
       }
     }
@@ -1704,7 +1793,7 @@ export default function Chart({
       if (series && copyableZonePricesRef.current.length > 0 && el) {
         const rect = el.getBoundingClientRect();
         const y = e.clientY - rect.top;
-        for (const price of copyableZonePricesRef.current) {
+        for (const { price } of copyableZonePricesRef.current) {
           const lineY = series.priceToCoordinate(price);
           if (lineY == null) continue;
           const diff = Math.abs(lineY - y);
@@ -1796,10 +1885,54 @@ export default function Chart({
       }
 
       setEditingLevel(false);
+
+      // --- EMA proximity detection (50 & 200 EMA only, within 40 px) ---
+      let emaContext: { period: number; hasAlert: boolean; interval: string } | null = null;
+      if (series && el) {
+        const rect = el.getBoundingClientRect();
+        const clickY = e.clientY - rect.top;
+        let minEmaDiff = Infinity;
+        for (const period of [50, 200]) {
+          if (!emaEnabledRef.current.has(period)) continue; // skip hidden EMAs
+          const emaVal = currentEmaValuesRef.current.get(period);
+          if (emaVal == null) continue;
+          const emaY = series.priceToCoordinate(emaVal);
+          if (emaY == null) continue;
+          const diff = Math.abs(emaY - clickY);
+          if (diff < minEmaDiff && diff <= 25) {
+            minEmaDiff = diff;
+            const hasAlert = emaAlertsRef.current.some((a) => a.period === period);
+            emaContext = { period, hasAlert, interval };
+          }
+        }
+      }
+
+      // --- Price-level proximity detection (all zone + custom lines, 15 px) ---
+      let priceContext: { price: number; hasAlert: boolean; label: string } | null = null;
+      if (allowPriceAlertsRef.current && series && el) {
+        const rect = el.getBoundingClientRect();
+        const clickY = e.clientY - rect.top;
+        let minPriceDiff = Infinity;
+        for (const { price, label } of copyableZonePricesRef.current) {
+          const lineY = series.priceToCoordinate(price);
+          if (lineY == null) continue;
+          const diff = Math.abs(lineY - clickY);
+          if (diff < minPriceDiff && diff <= 15) {
+            minPriceDiff = diff;
+            const hasAlert = priceAlertsRef.current.some(
+              (a) => Math.round(a.price) === Math.round(price),
+            );
+            priceContext = { price, hasAlert, label };
+          }
+        }
+      }
+
       setContextMenu({
         x: e.clientX,
         y: e.clientY,
         customLevel: matchedCustomLevel,
+        emaContext,
+        priceContext,
       });
     };
 
@@ -1810,6 +1943,9 @@ export default function Chart({
     const countdownTimer = setInterval(() => {
       updateClosePriceLine();
     }, 1000);
+
+    // --- Alert grace-period: suppress firing for the first 3 s after mount ---
+    const alertGraceTimer = setTimeout(() => { alertReadyRef.current = true; }, 3000);
 
     // Place the default view once the cell has a real size AND history is in.
     let initialViewApplied = false;
@@ -1837,6 +1973,8 @@ export default function Chart({
         deltaHoverPositionFrameRef.current = null;
       }
       clearInterval(countdownTimer);
+      clearTimeout(alertGraceTimer);
+      alertReadyRef.current = false;
       if (closeLineRef.current && candleRef.current) {
         try {
           candleRef.current.removePriceLine(closeLineRef.current);
@@ -1918,6 +2056,22 @@ export default function Chart({
     copyableZonePricesRef.current = [];
     if (!levelsEnabled) return;
 
+    // Map zone title codes → human-readable speech labels
+    const ZONE_LABELS: Record<string, string> = {
+      PDH: "Previous Day High",
+      PDL: "Previous Day Low",
+      PDM: "Previous Day Mid",
+      "75%": "Previous Day 75%",
+      "25%": "Previous Day 25%",
+      MH: "Monday High",
+      ML: "Monday Low",
+      WH: "Weekend High",
+      WM: "Weekend Mid",
+      WL: "Weekend Low",
+      PWH: "Previous Week High",
+      PWL: "Previous Week Low",
+    };
+
     const add = (
       price: number,
       color: string,
@@ -1935,8 +2089,9 @@ export default function Chart({
         axisLabelVisible: false,
         title,
       });
+      const label = ZONE_LABELS[title] ?? title;
       zoneLinesRef.current.push({ line, price: roundedPrice, labelVisible: false });
-      copyableZonePricesRef.current.push(roundedPrice);
+      copyableZonePricesRef.current.push({ price: roundedPrice, label, isCustom: false });
     };
 
     if (zones) {
@@ -1976,7 +2131,7 @@ export default function Chart({
         title: `C${i + 1}`,
       });
       zoneLinesRef.current.push({ line, price: roundedPrice, labelVisible: false });
-      copyableZonePricesRef.current.push(roundedPrice);
+      copyableZonePricesRef.current.push({ price: roundedPrice, label: "Liquidity Pool", isCustom: true });
     }
     scheduleZoneLabelVisibilityUpdate();
   }, [zones, lineToggles, customLevels, chartReady, levelsEnabled]);
@@ -2285,6 +2440,74 @@ export default function Chart({
             </svg>
             Reset Price Scale
           </button>
+          {/* EMA Alert */}
+          {contextMenu.emaContext && (onSetEmaAlertRef.current || onCancelEmaAlertRef.current) && (
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                if (contextMenu.emaContext!.hasAlert) {
+                  onCancelEmaAlertRef.current?.(contextMenu.emaContext!.period);
+                } else {
+                  onSetEmaAlertRef.current?.(contextMenu.emaContext!.period);
+                }
+                setContextMenu(null);
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                {contextMenu.emaContext.hasAlert ? (
+                  <>
+                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                    <line x1="1" y1="1" x2="23" y2="23" />
+                  </>
+                ) : (
+                  <>
+                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                  </>
+                )}
+              </svg>
+              {contextMenu.emaContext.hasAlert
+                ? `Cancel Alert: ${contextMenu.emaContext.interval} ${contextMenu.emaContext.period} EMA`
+                : `Set Alert: ${contextMenu.emaContext.interval} ${contextMenu.emaContext.period} EMA`
+              }
+            </button>
+          )}
+
+          {/* Price Alert */}
+          {contextMenu.priceContext && (onSetPriceAlertRef.current || onCancelPriceAlertRef.current) && (
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                if (contextMenu.priceContext!.hasAlert) {
+                  onCancelPriceAlertRef.current?.(contextMenu.priceContext!.price);
+                } else {
+                  onSetPriceAlertRef.current?.(contextMenu.priceContext!.price, contextMenu.priceContext!.label);
+                }
+                setContextMenu(null);
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                {contextMenu.priceContext.hasAlert ? (
+                  <>
+                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                    <line x1="1" y1="1" x2="23" y2="23" />
+                  </>
+                ) : (
+                  <>
+                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                  </>
+                )}
+              </svg>
+              {contextMenu.priceContext.hasAlert
+                ? `Cancel Alert: ${contextMenu.priceContext.label}`
+                : `Set Alert: ${contextMenu.priceContext.label}`
+              }
+            </button>
+          )}
+
           {contextMenu.customLevel && (
             <>
               {editingLevel ? (

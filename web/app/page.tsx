@@ -7,6 +7,8 @@ import TopBar from "../components/TopBar";
 import type { TzOffset, Zones, LineToggles, CustomLevel, CustomLevelColor, LinkedCrosshairId, LinkedCrosshairSync, HtfEmaKey } from "../components/Chart";
 import { fetchZones } from "../lib/zones";
 import { playCandleCloseAlert, playTestChirp, getAudioContext, preloadWestminsterChime } from "../lib/audioAlert";
+import { emptyAlertState, loadAlertState, saveAlertState, speakAlertText } from "../lib/alertStore";
+import type { EmaAlert, PriceAlert, AlertState } from "../lib/alertStore";
 
 const ALL_EMAS = [10, 20, 50, 200];
 const STORAGE_KEY_CUSTOM_LEVELS = "fuck-your-chart:custom-levels:v1";
@@ -217,6 +219,16 @@ function drawDomTreeToCanvas(
   }
 }
 
+function intervalToLabel(interval: string): string {
+  const m = /^(\d+)([mhd])$/i.exec(interval);
+  if (!m) return interval;
+  const n = m[1]!;
+  const u = m[2]!.toLowerCase();
+  if (u === "m") return `${n} minute`;
+  if (u === "h") return `${n} hour`;
+  return `${n} day`;
+}
+
 export default function Page() {
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [selectedDate, setSelectedDate] = useState<string>("");
@@ -326,6 +338,63 @@ export default function Page() {
   const handleHtfEnabledChange = useCallback((next: Record<HtfEmaKey, boolean>) => {
     setHtfEnabled(next);
     setLocalHtfEma(next);
+  }, []);
+
+  // ── Alert state ────────────────────────────────────────────────────────────
+  const [alertState, setAlertState] = useState<AlertState>(emptyAlertState);
+  useEffect(() => { setAlertState(loadAlertState()); }, []);
+
+  const handleSetEmaAlert = useCallback((chartId: "main" | "ha-top" | "ha-bottom", interval: string, period: number) => {
+    const id = `${chartId}-ema-${period}`;
+    const speechText = `${intervalToLabel(interval)} touching ${period} E. M. A.`;
+    const alert: EmaAlert = { id, kind: "ema", chartId, period, speechText };
+    setAlertState((prev) => {
+      const emas = prev.emas.filter((a) => a.id !== id);
+      const next = { ...prev, emas: [...emas, alert] };
+      saveAlertState(next);
+      return next;
+    });
+  }, []);
+
+  const handleCancelEmaAlert = useCallback((chartId: "main" | "ha-top" | "ha-bottom", period: number) => {
+    const id = `${chartId}-ema-${period}`;
+    setAlertState((prev) => {
+      const next = { ...prev, emas: prev.emas.filter((a) => a.id !== id) };
+      saveAlertState(next);
+      return next;
+    });
+  }, []);
+
+  const handleSetPriceAlert = useCallback((price: number, label: string) => {
+    const id = `price-${Math.round(price)}`;
+    const speechText = `Price touching ${label}`;
+    const alert: PriceAlert = { id, kind: "price", price, speechText };
+    setAlertState((prev) => {
+      const prices = prev.prices.filter((a) => Math.round(a.price) !== Math.round(price));
+      const next = { ...prev, prices: [...prices, alert] };
+      saveAlertState(next);
+      return next;
+    });
+  }, []);
+
+  const handleCancelPriceAlert = useCallback((price: number) => {
+    setAlertState((prev) => {
+      const next = { ...prev, prices: prev.prices.filter((a) => Math.round(a.price) !== Math.round(price)) };
+      saveAlertState(next);
+      return next;
+    });
+  }, []);
+
+  const handleAlertTriggered = useCallback((id: string, speechText: string) => {
+    speakAlertText(speechText);
+    setAlertState((prev) => {
+      const next = {
+        emas: prev.emas.filter((a) => a.id !== id),
+        prices: prev.prices.filter((a) => a.id !== id),
+      };
+      saveAlertState(next);
+      return next;
+    });
   }, []);
   const [zones, setZones] = useState<Zones | null>(null);
   const [toggles, setToggles] = useState<LineToggles>(DEFAULT_TOGGLES);
@@ -829,6 +898,14 @@ export default function Page() {
             onLinkedCrosshair={isSynchronized ? syncLinkedCrosshair : undefined}
             registerResetView={(fn) => { rawResetViewRef.current = fn; }}
             onResetView={isSynchronized ? () => { haTopResetViewRef.current?.(); } : undefined}
+            emaAlerts={selectedTimeframe === null ? alertState.emas.filter((a) => a.chartId === "main") : undefined}
+            priceAlerts={selectedTimeframe === null ? alertState.prices : undefined}
+            allowPriceAlerts={selectedTimeframe === null}
+            onSetEmaAlert={selectedTimeframe === null ? (period) => handleSetEmaAlert("main", rawInterval, period) : undefined}
+            onCancelEmaAlert={selectedTimeframe === null ? (period) => handleCancelEmaAlert("main", period) : undefined}
+            onSetPriceAlert={selectedTimeframe === null ? handleSetPriceAlert : undefined}
+            onCancelPriceAlert={selectedTimeframe === null ? handleCancelPriceAlert : undefined}
+            onAlertTriggered={selectedTimeframe === null ? handleAlertTriggered : undefined}
           />
         </div>
         <div className="cell chart-ha-top">
@@ -859,6 +936,10 @@ export default function Page() {
             onLinkedCrosshair={isSynchronized ? syncLinkedCrosshair : undefined}
             registerResetView={(fn) => { haTopResetViewRef.current = fn; }}
             onResetView={isSynchronized ? () => { rawResetViewRef.current?.(); } : undefined}
+            emaAlerts={selectedTimeframe === null ? alertState.emas.filter((a) => a.chartId === "ha-top") : undefined}
+            onSetEmaAlert={selectedTimeframe === null ? (period) => handleSetEmaAlert("ha-top", topHaInterval, period) : undefined}
+            onCancelEmaAlert={selectedTimeframe === null ? (period) => handleCancelEmaAlert("ha-top", period) : undefined}
+            onAlertTriggered={selectedTimeframe === null ? handleAlertTriggered : undefined}
           />
         </div>
         <div className="cell chart-ha-bottom">
@@ -882,6 +963,10 @@ export default function Page() {
             isMaximized={maximizedChart === "ha-bottom"}
             onToggleMaximize={() => handleToggleMaximize("ha-bottom")}
             onRegisterScreenshot={(fn) => { haBottomScreenshotRef.current = fn; }}
+            emaAlerts={selectedTimeframe === null ? alertState.emas.filter((a) => a.chartId === "ha-bottom") : undefined}
+            onSetEmaAlert={selectedTimeframe === null ? (period) => handleSetEmaAlert("ha-bottom", haBottomInterval, period) : undefined}
+            onCancelEmaAlert={selectedTimeframe === null ? (period) => handleCancelEmaAlert("ha-bottom", period) : undefined}
+            onAlertTriggered={selectedTimeframe === null ? handleAlertTriggered : undefined}
           />
         </div>
       </main>
