@@ -322,13 +322,17 @@ export default function Page() {
   };
 
   const handleChartDoubleClick = (chartId: "main" | "ha-top" | "ha-bottom") => {
-    if (chartId === "ha-bottom") return; // 3m — do nothing
     if (chartId === "main") {
       // 5m: toggle side-by-side layout
       toggleLayout();
       return;
     }
-    // ha-top: toggle 2-layout (expand to cover 3m slot)
+    if (chartId === "ha-bottom") {
+      // 3m: expand 15m HA to cover 3m slot (collapse back to 2-layout)
+      setHaTopExpanded(true);
+      return;
+    }
+    // ha-top: toggle 2-layout (expand/collapse 3m slot)
     setHaTopExpanded((prev) => !prev);
   };
   const [tz, setTz] = useState<TzOffset>(8);
