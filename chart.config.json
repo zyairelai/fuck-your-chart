@@ -2,11 +2,19 @@
   "symbol": "BTCUSDT",
   "timezone": 8,
   "defaultLayout": {
-    "twoPanelDefault": false,
-    "switched": true
+    "twoPanelDefault": false
+  },
+  "levels": {
+    "weekend": false,
+    "weekly": true,
+    "monday": false,
+    "pdhlm": true,
+    "25/75": false
   },
   "charts": {
-    "main": {
+    "chart1": {
+      "position": "right",
+      "synchro": true,
       "interval": "5m",
       "heikin": false,
       "levels": true,
@@ -23,7 +31,9 @@
         "4h200": false
       }
     },
-    "haTop": {
+    "chart2": {
+      "position": "bottom",
+      "synchro": true,
       "interval": "15m",
       "heikin": true,
       "levels": true,
@@ -34,7 +44,9 @@
         "200": true
       }
     },
-    "haBottom": {
+    "chart3": {
+      "position": "top",
+      "synchro": false,
       "interval": "1h",
       "heikin": true,
       "levels": false,

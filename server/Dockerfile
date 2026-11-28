@@ -31,6 +31,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build-server /repo/server/dist ./dist
 COPY server/package.json ./package.json
+COPY chart.config.json ./chart.config.json
 COPY --from=deps /repo/server/node_modules ./node_modules
 COPY --from=build-web /repo/web/out ./web/out
 EXPOSE 8000

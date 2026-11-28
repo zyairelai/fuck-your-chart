@@ -72,13 +72,38 @@ interface LineToggles {
   weekend: boolean;
 }
 
-const DEFAULT_LINE_TOGGLES: LineToggles = {
-  weekly: true,
-  monday: false,
-  pdhlm: true,
-  fibb: false,
-  weekend: false,
-};
+function loadDefaultLineToggles(): LineToggles {
+  const fallback: LineToggles = {
+    weekly: true,
+    monday: false,
+    pdhlm: true,
+    fibb: false,
+    weekend: false,
+  };
+  for (const candidate of [
+    path.resolve(__dirname, "..", "chart.config.json"),
+    path.resolve(__dirname, "..", "..", "chart.config.json"),
+  ]) {
+    try {
+      const raw = readFileSync(candidate, "utf8");
+      const parsed = JSON.parse(raw) as { levels?: Record<string, unknown> };
+      if (parsed.levels && typeof parsed.levels === "object") {
+        return {
+          weekly: typeof parsed.levels.weekly === "boolean" ? parsed.levels.weekly : fallback.weekly,
+          monday: typeof parsed.levels.monday === "boolean" ? parsed.levels.monday : fallback.monday,
+          pdhlm: typeof parsed.levels.pdhlm === "boolean" ? parsed.levels.pdhlm : fallback.pdhlm,
+          fibb: typeof parsed.levels["25/75"] === "boolean" ? parsed.levels["25/75"] : fallback.fibb,
+          weekend: typeof parsed.levels.weekend === "boolean" ? parsed.levels.weekend : fallback.weekend,
+        };
+      }
+    } catch {
+      // Try next candidate
+    }
+  }
+  return fallback;
+}
+
+const DEFAULT_LINE_TOGGLES: LineToggles = loadDefaultLineToggles();
 
 function isLineToggles(v: unknown): v is LineToggles {
   if (!v || typeof v !== "object") return false;

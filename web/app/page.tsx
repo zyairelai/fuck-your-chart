@@ -18,9 +18,9 @@ function getEmaOff(emas: Record<string, boolean>): number[] {
 }
 
 const DEFAULT_HTF_EMA: Record<HtfEmaKey, boolean> = {
-  "15m200": Boolean(chartConfig.charts.main.htfEmas["15m200"]),
-  "1h200": Boolean(chartConfig.charts.main.htfEmas["1h200"]),
-  "4h200": Boolean(chartConfig.charts.main.htfEmas["4h200"]),
+  "15m200": Boolean(chartConfig.charts.chart1.htfEmas["15m200"]),
+  "1h200": Boolean(chartConfig.charts.chart1.htfEmas["1h200"]),
+  "4h200": Boolean(chartConfig.charts.chart1.htfEmas["4h200"]),
 };
 const STORAGE_KEY_CUSTOM_LEVELS = "fuck-your-chart:custom-levels:v1";
 const STORAGE_KEY_HTF_EMA = "fuck-your-chart:htf-ema:v1";
@@ -80,11 +80,11 @@ function areLevelsEqual(a: CustomLevel[], b: CustomLevel[]): boolean {
 }
 
 const DEFAULT_TOGGLES: LineToggles = {
-  weekly: true,
-  monday: false,
-  pdhlm: true,
-  fibb: false,
-  weekend: false,
+  weekly: Boolean(chartConfig.levels.weekly),
+  monday: Boolean(chartConfig.levels.monday),
+  pdhlm: Boolean(chartConfig.levels.pdhlm),
+  fibb: Boolean(chartConfig.levels["25/75"]),
+  weekend: Boolean(chartConfig.levels.weekend),
 };
 
 const STORAGE_KEY_TOGGLES = "fuck-your-chart:line-toggles:v1";
@@ -248,8 +248,14 @@ export default function Page() {
   const maximizedChartRef = useRef(maximizedChart);
   maximizedChartRef.current = maximizedChart;
 
-  // 2-layout mode by default: 15m HA covers the 3m slot; double-click on ha-top pops out 3m (3-layout)
-  const [haTopExpanded, setHaTopExpanded] = useState(chartConfig.defaultLayout.twoPanelDefault);
+  // 2-layout mode: the synchro HA chart expands to cover the other HA slot
+  const [twoPanelMode, setTwoPanelMode] = useState(chartConfig.defaultLayout.twoPanelDefault);
+
+  const mainSyncs = Boolean(chartConfig.charts.chart1.synchro);
+  const haTopSyncs = Boolean(chartConfig.charts.chart2.synchro);
+  const haBottomSyncs = Boolean(chartConfig.charts.chart3.synchro);
+  const expandedHaId: "ha-top" | "ha-bottom" =
+    haTopSyncs ? "ha-top" : haBottomSyncs ? "ha-bottom" : "ha-top";
 
   const rawScreenshotRef = useRef<(() => HTMLCanvasElement | null) | null>(null);
   const haTopScreenshotRef = useRef<(() => HTMLCanvasElement | null) | null>(null);
@@ -263,9 +269,16 @@ export default function Page() {
     "heikin-bottom": null,
   });
 
-  /** Imperative handles so each chart can trigger resetView() on its sibling. */
+  /** Imperative handles so each chart can trigger resetView() on its synced siblings. */
   const rawResetViewRef = useRef<(() => void) | null>(null);
   const haTopResetViewRef = useRef<(() => void) | null>(null);
+  const haBottomResetViewRef = useRef<(() => void) | null>(null);
+
+  const resetSyncedSiblings = (source: "main" | "ha-top" | "ha-bottom") => {
+    if (source !== "main" && mainSyncs) rawResetViewRef.current?.();
+    if (source !== "ha-top" && haTopSyncs) haTopResetViewRef.current?.();
+    if (source !== "ha-bottom" && haBottomSyncs) haBottomResetViewRef.current?.();
+  };
 
   const registerLinkedTime = (api: ITimeScaleApi<Time> | null) => {
     if (api && !linkedTimeScales.current.includes(api)) {
@@ -307,13 +320,13 @@ export default function Page() {
     return () => clearTimeout(timer);
   }, [maximizedChart]);
 
-  // Also resize when 2-layout (ha-top expanded) changes
+  // Also resize when 2-layout mode changes
   useEffect(() => {
     const timer = setTimeout(() => {
       window.dispatchEvent(new Event("resize"));
     }, 40);
     return () => clearTimeout(timer);
-  }, [haTopExpanded]);
+  }, [twoPanelMode]);
 
   // handleToggleMaximize kept for compatibility (no longer called from buttons, but harmless)
   const handleToggleMaximize = (chartId: "main" | "ha-top" | "ha-bottom") => {
@@ -324,33 +337,33 @@ export default function Page() {
       setMaximizedChart(chartId);
       const currentInterval =
         chartId === "main"
-          ? (selectedTimeframe ?? chartConfig.charts.main.interval)
+          ? (selectedTimeframe ?? chartConfig.charts.chart1.interval)
           : chartId === "ha-top"
-          ? (selectedTimeframe ?? chartConfig.charts.haTop.interval)
-          : chartConfig.charts.haBottom.interval;
+          ? (selectedTimeframe ?? chartConfig.charts.chart2.interval)
+          : chartConfig.charts.chart3.interval;
       setSingleTimeframe(currentInterval);
     }
   };
 
   const handleChartDoubleClick = (chartId: "main" | "ha-top" | "ha-bottom") => {
     if (chartId === "main") {
-      // 5m: toggle side-by-side layout
+      // main: toggle side-by-side layout
       toggleLayout();
       return;
     }
-    if (chartId === "ha-bottom") {
-      // 3m: expand 15m HA to cover 3m slot (collapse back to 2-layout)
-      setHaTopExpanded(true);
+    if (chartId !== expandedHaId) {
+      // Non-synchro HA chart: expand the synchro HA chart to cover this slot (collapse back to 2-layout)
+      setTwoPanelMode(true);
       return;
     }
-    // ha-top: toggle 2-layout (expand/collapse 3m slot)
-    setHaTopExpanded((prev) => !prev);
+    // Synchro HA chart: toggle 2-layout <-> 3-layout
+    setTwoPanelMode((prev) => !prev);
   };
   const [tz, setTz] = useState<TzOffset>(chartConfig.timezone as TzOffset);
-  const [switchedLayout, setSwitchedLayout] = useState(chartConfig.defaultLayout.switched);
-  const [levelsEnabledMain, setLevelsEnabledMain] = useState(chartConfig.charts.main.levels);
-  const [levelsEnabledHaTop, setLevelsEnabledHaTop] = useState(chartConfig.charts.haTop.levels);
-  const [levelsEnabledHaBottom, setLevelsEnabledHaBottom] = useState(chartConfig.charts.haBottom.levels);
+  const [switchedLayout, setSwitchedLayout] = useState(chartConfig.charts.chart1.position === "right");
+  const [levelsEnabledMain, setLevelsEnabledMain] = useState(chartConfig.charts.chart1.levels);
+  const [levelsEnabledHaTop, setLevelsEnabledHaTop] = useState(chartConfig.charts.chart2.levels);
+  const [levelsEnabledHaBottom, setLevelsEnabledHaBottom] = useState(chartConfig.charts.chart3.levels);
   const [htfEnabled, setHtfEnabled] = useState<Record<HtfEmaKey, boolean>>(() => ({ ...DEFAULT_HTF_EMA }));
 
   useEffect(() => {
@@ -724,16 +737,22 @@ export default function Page() {
 
   const rawInterval =
     maximizedChart === "main"
-      ? (singleTimeframe ?? (selectedTimeframe ?? chartConfig.charts.main.interval))
-      : (selectedTimeframe ?? chartConfig.charts.main.interval);
+      ? (singleTimeframe ?? (selectedTimeframe ?? chartConfig.charts.chart1.interval))
+      : mainSyncs
+      ? (selectedTimeframe ?? chartConfig.charts.chart1.interval)
+      : chartConfig.charts.chart1.interval;
   const topHaInterval =
     maximizedChart === "ha-top"
-      ? (singleTimeframe ?? (selectedTimeframe ?? chartConfig.charts.haTop.interval))
-      : (selectedTimeframe ?? chartConfig.charts.haTop.interval);
+      ? (singleTimeframe ?? (selectedTimeframe ?? chartConfig.charts.chart2.interval))
+      : haTopSyncs
+      ? (selectedTimeframe ?? chartConfig.charts.chart2.interval)
+      : chartConfig.charts.chart2.interval;
   const haBottomInterval =
     maximizedChart === "ha-bottom"
-      ? (singleTimeframe ?? chartConfig.charts.haBottom.interval)
-      : chartConfig.charts.haBottom.interval;
+      ? (singleTimeframe ?? chartConfig.charts.chart3.interval)
+      : haBottomSyncs
+      ? (selectedTimeframe ?? chartConfig.charts.chart3.interval)
+      : chartConfig.charts.chart3.interval;
 
   const isSynchronized = selectedTimeframe !== null && maximizedChart === null;
 
@@ -889,17 +908,17 @@ export default function Page() {
         onToggleBeep5m={toggleBeep5m}
         onTakeScreenshot={handleTakeScreenshot}
       />
-      <main className={`page${switchedLayout ? " switched" : ""}${maximizedChart ? ` maximized-${maximizedChart}` : ""}${haTopExpanded ? " ha-top-expanded" : ""}`}>
+      <main className={`page${switchedLayout ? " switched" : ""}${maximizedChart ? ` maximized-${maximizedChart}` : ""}`}>
         <div className="cell chart-main">
           <Chart
-            key={`raw-${symbol}-${rawInterval}-${isSynchronized}`}
+            key={`raw-${symbol}-${rawInterval}-${isSynchronized && mainSyncs}`}
             symbol={symbol}
             interval={rawInterval}
-            heikin={chartConfig.charts.main.heikin}
+            heikin={chartConfig.charts.chart1.heikin}
             emas={ALL_EMAS}
-            defaultEmaOff={getEmaOff(chartConfig.charts.main.emas)}
+            defaultEmaOff={getEmaOff(chartConfig.charts.chart1.emas)}
             allowFootprint={true}
-            defaultFootprintEnabled={chartConfig.charts.main.delta}
+            defaultFootprintEnabled={chartConfig.charts.chart1.delta}
             allowHtfEma={true}
             htfEnabled={htfEnabled}
             onHtfEnabledChange={handleHtfEnabledChange}
@@ -915,13 +934,13 @@ export default function Page() {
             isMaximized={maximizedChart === "main"}
             onToggleMaximize={() => handleToggleMaximize("main")}
             onRegisterScreenshot={(fn) => { rawScreenshotRef.current = fn; }}
-            registerTimeScale={isSynchronized ? registerLinkedTime : undefined}
-            siblingScales={isSynchronized ? linkedTimeScales : undefined}
+            registerTimeScale={isSynchronized && mainSyncs ? registerLinkedTime : undefined}
+            siblingScales={isSynchronized && mainSyncs ? linkedTimeScales : undefined}
             linkedCrosshairId="raw"
             registerLinkedCrosshair={registerLinkedCrosshair}
             onLinkedCrosshair={syncLinkedCrosshair}
             registerResetView={(fn) => { rawResetViewRef.current = fn; }}
-            onResetView={isSynchronized ? () => { haTopResetViewRef.current?.(); } : undefined}
+            onResetView={isSynchronized && mainSyncs ? () => resetSyncedSiblings("main") : undefined}
             emaAlerts={selectedTimeframe === null ? alertState.emas.filter((a) => a.chartId === "main") : undefined}
             priceAlerts={selectedTimeframe === null ? alertState.prices : undefined}
             allowPriceAlerts={selectedTimeframe === null}
@@ -932,14 +951,18 @@ export default function Page() {
             onAlertTriggered={selectedTimeframe === null ? handleAlertTriggered : undefined}
           />
         </div>
-        <div className="cell chart-ha-top">
+        <div
+          className={`cell chart-ha-top ${chartConfig.charts.chart2.position === "bottom" ? "pos-bottom" : "pos-top"}${
+            twoPanelMode ? (expandedHaId === "ha-top" ? " expanded-ha" : " collapsed-ha") : ""
+          }`}
+        >
           <Chart
-            key={`ha-top-${symbol}-${topHaInterval}-${isSynchronized}`}
+            key={`ha-top-${symbol}-${topHaInterval}-${isSynchronized && haTopSyncs}`}
             symbol={symbol}
             interval={topHaInterval}
-            heikin={chartConfig.charts.haTop.heikin}
+            heikin={chartConfig.charts.chart2.heikin}
             emas={ALL_EMAS}
-            defaultEmaOff={getEmaOff(chartConfig.charts.haTop.emas)}
+            defaultEmaOff={getEmaOff(chartConfig.charts.chart2.emas)}
             allowFootprint={false}
             defaultFootprintEnabled={false}
             levelsEnabled={levelsEnabledHaTop}
@@ -954,27 +977,31 @@ export default function Page() {
             isMaximized={maximizedChart === "ha-top"}
             onToggleMaximize={() => handleToggleMaximize("ha-top")}
             onRegisterScreenshot={(fn) => { haTopScreenshotRef.current = fn; }}
-            registerTimeScale={isSynchronized ? registerLinkedTime : undefined}
-            siblingScales={isSynchronized ? linkedTimeScales : undefined}
+            registerTimeScale={isSynchronized && haTopSyncs ? registerLinkedTime : undefined}
+            siblingScales={isSynchronized && haTopSyncs ? linkedTimeScales : undefined}
             linkedCrosshairId="heikin"
             registerLinkedCrosshair={registerLinkedCrosshair}
             onLinkedCrosshair={syncLinkedCrosshair}
             registerResetView={(fn) => { haTopResetViewRef.current = fn; }}
-            onResetView={isSynchronized ? () => { rawResetViewRef.current?.(); } : undefined}
+            onResetView={isSynchronized && haTopSyncs ? () => resetSyncedSiblings("ha-top") : undefined}
             emaAlerts={selectedTimeframe === null ? alertState.emas.filter((a) => a.chartId === "ha-top") : undefined}
             onSetEmaAlert={selectedTimeframe === null ? (period) => handleSetEmaAlert("ha-top", topHaInterval, period) : undefined}
             onCancelEmaAlert={selectedTimeframe === null ? (period) => handleCancelEmaAlert("ha-top", period) : undefined}
             onAlertTriggered={selectedTimeframe === null ? handleAlertTriggered : undefined}
           />
         </div>
-        <div className="cell chart-ha-bottom">
+        <div
+          className={`cell chart-ha-bottom ${chartConfig.charts.chart3.position === "top" ? "pos-top" : "pos-bottom"}${
+            twoPanelMode ? (expandedHaId === "ha-bottom" ? " expanded-ha" : " collapsed-ha") : ""
+          }`}
+        >
           <Chart
-            key={`ha-bottom-${symbol}-${haBottomInterval}`}
+            key={`ha-bottom-${symbol}-${haBottomInterval}-${isSynchronized && haBottomSyncs}`}
             symbol={symbol}
             interval={haBottomInterval}
-            heikin={chartConfig.charts.haBottom.heikin}
+            heikin={chartConfig.charts.chart3.heikin}
             emas={ALL_EMAS}
-            defaultEmaOff={getEmaOff(chartConfig.charts.haBottom.emas)}
+            defaultEmaOff={getEmaOff(chartConfig.charts.chart3.emas)}
             allowFootprint={false}
             defaultFootprintEnabled={false}
             levelsEnabled={levelsEnabledHaBottom}
@@ -989,9 +1016,13 @@ export default function Page() {
             isMaximized={maximizedChart === "ha-bottom"}
             onToggleMaximize={() => handleToggleMaximize("ha-bottom")}
             onRegisterScreenshot={(fn) => { haBottomScreenshotRef.current = fn; }}
+            registerTimeScale={isSynchronized && haBottomSyncs ? registerLinkedTime : undefined}
+            siblingScales={isSynchronized && haBottomSyncs ? linkedTimeScales : undefined}
             linkedCrosshairId="heikin-bottom"
             registerLinkedCrosshair={registerLinkedCrosshair}
             onLinkedCrosshair={syncLinkedCrosshair}
+            registerResetView={(fn) => { haBottomResetViewRef.current = fn; }}
+            onResetView={isSynchronized && haBottomSyncs ? () => resetSyncedSiblings("ha-bottom") : undefined}
             emaAlerts={selectedTimeframe === null ? alertState.emas.filter((a) => a.chartId === "ha-bottom") : undefined}
             onSetEmaAlert={selectedTimeframe === null ? (period) => handleSetEmaAlert("ha-bottom", haBottomInterval, period) : undefined}
             onCancelEmaAlert={selectedTimeframe === null ? (period) => handleCancelEmaAlert("ha-bottom", period) : undefined}

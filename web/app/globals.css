@@ -381,15 +381,25 @@ body {
   grid-row: 2;
 }
 
-/* ── 2-layout mode: ha-top expands to cover ha-bottom slot ─────────────── */
-/* ha-top spans both rows on its column */
-.page.ha-top-expanded .chart-ha-top,
-.page.switched.ha-top-expanded .chart-ha-top {
+/* Explicit row placement from chart.config.json position ("top" | "bottom") */
+.page .chart-ha-top.pos-top,
+.page .chart-ha-bottom.pos-top {
+  grid-row: 1;
+}
+
+.page .chart-ha-top.pos-bottom,
+.page .chart-ha-bottom.pos-bottom {
+  grid-row: 2;
+}
+
+/* ── 2-layout mode: active HA chart expands to cover the other HA slot ── */
+.page .expanded-ha,
+.page.switched .expanded-ha {
   grid-row: 1 / span 2 !important;
 }
-/* ha-bottom hidden */
-.page.ha-top-expanded .chart-ha-bottom,
-.page.switched.ha-top-expanded .chart-ha-bottom {
+
+.page .collapsed-ha,
+.page.switched .collapsed-ha {
   display: none !important;
 }
 

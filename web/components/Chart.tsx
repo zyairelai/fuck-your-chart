@@ -1678,9 +1678,14 @@ export default function Chart({
       const time = p.time == null ? null : (p.time as number);
       updateHoverAtTime(time);
       // Restore this chart's own crosshair only when the user genuinely moves
-      // their OWN mouse — not when setCrosshairPosition (from a sibling sync)
-      // triggers this handler (suppressLinkedCrosshairRef is true in that case).
-      if (p.point != null && linkedCrosshairActiveRef.current && !suppressLinkedCrosshairRef.current) {
+      // their OWN mouse inside this chart — not when setCrosshairPosition
+      // (from a sibling sync) triggers this handler.
+      if (
+        p.point != null
+        && linkedCrosshairActiveRef.current
+        && !suppressLinkedCrosshairRef.current
+        && pointerInsideChartRef.current
+      ) {
         linkedCrosshairActiveRef.current = false;
         chart.applyOptions({
           crosshair: {
@@ -1692,6 +1697,7 @@ export default function Chart({
         linkedCrosshairId
         && onLinkedCrosshair
         && !suppressLinkedCrosshairRef.current
+        && pointerInsideChartRef.current
         && lastLinkedCrosshairTimeRef.current !== time
       ) {
         lastLinkedCrosshairTimeRef.current = time;
@@ -1743,20 +1749,28 @@ export default function Chart({
       }
     };
     containerRef.current?.addEventListener("pointerenter", onPointerEnter);
+    containerRef.current?.addEventListener("pointermove", onPointerEnter);
     containerRef.current?.addEventListener("pointerdown", onPointerDown);
     containerRef.current?.addEventListener("pointerleave", onPointerLeave);
     containerRef.current?.addEventListener("pointerdown", onPriceScalePointerDown);
 
     const syncLinkedCrosshair: LinkedCrosshairSync = (time) => {
+      // Never overwrite the chart the user is actively hovering inside
+      if (time != null && pointerInsideChartRef.current) return;
       const generation = ++linkedCrosshairGenerationRef.current;
       suppressLinkedCrosshairRef.current = true;
       if (time == null) {
         chart.clearCrosshairPosition();
         updateHoverAtTime(null);
       } else {
-        const barIndex = findBarIndex(displayCacheRef.current, time, true);
-        const bar = barIndex >= 0 ? displayCacheRef.current[barIndex] : undefined;
-        const targetSeries = (bar && candleRef.current)
+        const bars = displayCacheRef.current;
+        const barIndex = findBarIndex(bars, time, false);
+        const bar = barIndex >= 0 ? bars[barIndex] : undefined;
+        const step = bars.length >= 2 ? bars[bars.length - 1]!.time - bars[bars.length - 2]!.time : 0;
+        const inFutureWhitespace =
+          bar != null && barIndex === bars.length - 1 && step > 0 && time >= bar.time + step;
+        const snappedTime = bar && !inFutureWhitespace ? bar.time : time;
+        const targetSeries = (bar && !inFutureWhitespace && candleRef.current)
           ? candleRef.current
           : (futureRef.current ?? candleRef.current);
         if (targetSeries) {
@@ -1768,8 +1782,8 @@ export default function Chart({
               },
             });
           }
-          chart.setCrosshairPosition(NaN, time as Time, targetSeries);
-          updateHoverAtTime(time);
+          chart.setCrosshairPosition(NaN, snappedTime as Time, targetSeries);
+          updateHoverAtTime(snappedTime);
         } else {
           chart.clearCrosshairPosition();
           updateHoverAtTime(null);
@@ -1985,6 +1999,7 @@ export default function Chart({
       el?.removeEventListener("dblclick", onDoubleClick, true);
       el?.removeEventListener("contextmenu", onContext);
       el?.removeEventListener("pointerenter", onPointerEnter);
+      el?.removeEventListener("pointermove", onPointerEnter);
       el?.removeEventListener("pointerdown", onPointerDown);
       el?.removeEventListener("pointerleave", onPointerLeave);
       el?.removeEventListener("pointerdown", onPriceScalePointerDown);
