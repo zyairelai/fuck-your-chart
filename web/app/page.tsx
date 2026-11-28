@@ -237,8 +237,8 @@ export default function Page() {
   const maximizedChartRef = useRef(maximizedChart);
   maximizedChartRef.current = maximizedChart;
 
-  // 2-layout mode: 15m HA expands to cover the 3m slot (double-click on ha-top)
-  const [haTopExpanded, setHaTopExpanded] = useState(false);
+  // 2-layout mode by default: 15m HA covers the 3m slot; double-click on ha-top pops out 3m (3-layout)
+  const [haTopExpanded, setHaTopExpanded] = useState(true);
 
   const rawScreenshotRef = useRef<(() => HTMLCanvasElement | null) | null>(null);
   const haTopScreenshotRef = useRef<(() => HTMLCanvasElement | null) | null>(null);
@@ -332,9 +332,9 @@ export default function Page() {
     setHaTopExpanded((prev) => !prev);
   };
   const [tz, setTz] = useState<TzOffset>(8);
-  const [switchedLayout, setSwitchedLayout] = useState(false);
+  const [switchedLayout, setSwitchedLayout] = useState(true);
   const [levelsEnabledMain, setLevelsEnabledMain] = useState(true);
-  const [levelsEnabledHaTop, setLevelsEnabledHaTop] = useState(false);
+  const [levelsEnabledHaTop, setLevelsEnabledHaTop] = useState(true);
   const [levelsEnabledHaBottom, setLevelsEnabledHaBottom] = useState(true);
   const [htfEnabled, setHtfEnabled] = useState<Record<HtfEmaKey, boolean>>({
     "15m200": false,
