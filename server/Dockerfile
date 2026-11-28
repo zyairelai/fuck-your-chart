@@ -20,6 +20,7 @@ RUN npm run build
 FROM node:22-slim AS build-web
 WORKDIR /repo/web
 COPY --from=deps /repo/web/node_modules ./node_modules
+COPY chart.config.json /repo/chart.config.json
 COPY web/ ./
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN --mount=type=cache,target=/repo/web/.next/cache \

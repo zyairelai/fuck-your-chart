@@ -1,0 +1,49 @@
+{
+  "symbol": "BTCUSDT",
+  "timezone": 8,
+  "defaultLayout": {
+    "twoPanelDefault": false,
+    "switched": true
+  },
+  "charts": {
+    "main": {
+      "interval": "5m",
+      "heikin": false,
+      "levels": true,
+      "delta": true,
+      "emas": {
+        "10": true,
+        "20": true,
+        "50": true,
+        "200": true
+      },
+      "htfEmas": {
+        "15m200": false,
+        "1h200": false,
+        "4h200": false
+      }
+    },
+    "haTop": {
+      "interval": "15m",
+      "heikin": true,
+      "levels": true,
+      "emas": {
+        "10": true,
+        "20": true,
+        "50": true,
+        "200": true
+      }
+    },
+    "haBottom": {
+      "interval": "1h",
+      "heikin": true,
+      "levels": false,
+      "emas": {
+        "10": true,
+        "20": true,
+        "50": true,
+        "200": true
+      }
+    }
+  }
+}

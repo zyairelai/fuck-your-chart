@@ -9,18 +9,29 @@ import { fetchZones } from "../lib/zones";
 import { playCandleCloseAlert, playTestChirp, getAudioContext, preloadWestminsterChime } from "../lib/audioAlert";
 import { emptyAlertState, loadAlertState, saveAlertState, speakAlertText } from "../lib/alertStore";
 import type { EmaAlert, PriceAlert, AlertState } from "../lib/alertStore";
+import chartConfig from "../../chart.config.json";
 
 const ALL_EMAS = [10, 20, 50, 200];
+
+function getEmaOff(emas: Record<string, boolean>): number[] {
+  return ALL_EMAS.filter((p) => emas[String(p)] === false);
+}
+
+const DEFAULT_HTF_EMA: Record<HtfEmaKey, boolean> = {
+  "15m200": Boolean(chartConfig.charts.main.htfEmas["15m200"]),
+  "1h200": Boolean(chartConfig.charts.main.htfEmas["1h200"]),
+  "4h200": Boolean(chartConfig.charts.main.htfEmas["4h200"]),
+};
 const STORAGE_KEY_CUSTOM_LEVELS = "fuck-your-chart:custom-levels:v1";
 const STORAGE_KEY_HTF_EMA = "fuck-your-chart:htf-ema:v1";
 
 function getLocalHtfEma(): Record<HtfEmaKey, boolean> {
   if (typeof window === "undefined") {
-    return { "15m200": false, "1h200": false, "4h200": false };
+    return { ...DEFAULT_HTF_EMA };
   }
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY_HTF_EMA);
-    if (!raw) return { "15m200": false, "1h200": false, "4h200": false };
+    if (!raw) return { ...DEFAULT_HTF_EMA };
     const parsed = JSON.parse(raw);
     return {
       "15m200": Boolean(parsed["15m200"]),
@@ -28,7 +39,7 @@ function getLocalHtfEma(): Record<HtfEmaKey, boolean> {
       "4h200": Boolean(parsed["4h200"]),
     };
   } catch {
-    return { "15m200": false, "1h200": false, "4h200": false };
+    return { ...DEFAULT_HTF_EMA };
   }
 }
 
@@ -229,7 +240,7 @@ function intervalToLabel(interval: string): string {
 }
 
 export default function Page() {
-  const [symbol, setSymbol] = useState("BTCUSDT");
+  const [symbol, setSymbol] = useState(chartConfig.symbol);
   const [selectedDate, setSelectedDate] = useState<string>("");
   const [selectedTimeframe, setSelectedTimeframe] = useState<string | null>(null);
   const [maximizedChart, setMaximizedChart] = useState<"main" | "ha-top" | "ha-bottom" | null>(null);
@@ -238,7 +249,7 @@ export default function Page() {
   maximizedChartRef.current = maximizedChart;
 
   // 2-layout mode by default: 15m HA covers the 3m slot; double-click on ha-top pops out 3m (3-layout)
-  const [haTopExpanded, setHaTopExpanded] = useState(true);
+  const [haTopExpanded, setHaTopExpanded] = useState(chartConfig.defaultLayout.twoPanelDefault);
 
   const rawScreenshotRef = useRef<(() => HTMLCanvasElement | null) | null>(null);
   const haTopScreenshotRef = useRef<(() => HTMLCanvasElement | null) | null>(null);
@@ -313,10 +324,10 @@ export default function Page() {
       setMaximizedChart(chartId);
       const currentInterval =
         chartId === "main"
-          ? (selectedTimeframe ?? "5m")
+          ? (selectedTimeframe ?? chartConfig.charts.main.interval)
           : chartId === "ha-top"
-          ? (selectedTimeframe ?? "15m")
-          : "3m";
+          ? (selectedTimeframe ?? chartConfig.charts.haTop.interval)
+          : chartConfig.charts.haBottom.interval;
       setSingleTimeframe(currentInterval);
     }
   };
@@ -335,16 +346,12 @@ export default function Page() {
     // ha-top: toggle 2-layout (expand/collapse 3m slot)
     setHaTopExpanded((prev) => !prev);
   };
-  const [tz, setTz] = useState<TzOffset>(8);
-  const [switchedLayout, setSwitchedLayout] = useState(true);
-  const [levelsEnabledMain, setLevelsEnabledMain] = useState(true);
-  const [levelsEnabledHaTop, setLevelsEnabledHaTop] = useState(true);
-  const [levelsEnabledHaBottom, setLevelsEnabledHaBottom] = useState(true);
-  const [htfEnabled, setHtfEnabled] = useState<Record<HtfEmaKey, boolean>>({
-    "15m200": false,
-    "1h200": false,
-    "4h200": false,
-  });
+  const [tz, setTz] = useState<TzOffset>(chartConfig.timezone as TzOffset);
+  const [switchedLayout, setSwitchedLayout] = useState(chartConfig.defaultLayout.switched);
+  const [levelsEnabledMain, setLevelsEnabledMain] = useState(chartConfig.charts.main.levels);
+  const [levelsEnabledHaTop, setLevelsEnabledHaTop] = useState(chartConfig.charts.haTop.levels);
+  const [levelsEnabledHaBottom, setLevelsEnabledHaBottom] = useState(chartConfig.charts.haBottom.levels);
+  const [htfEnabled, setHtfEnabled] = useState<Record<HtfEmaKey, boolean>>(() => ({ ...DEFAULT_HTF_EMA }));
 
   useEffect(() => {
     setHtfEnabled(getLocalHtfEma());
@@ -717,16 +724,16 @@ export default function Page() {
 
   const rawInterval =
     maximizedChart === "main"
-      ? (singleTimeframe ?? (selectedTimeframe ?? "5m"))
-      : (selectedTimeframe ?? "5m");
+      ? (singleTimeframe ?? (selectedTimeframe ?? chartConfig.charts.main.interval))
+      : (selectedTimeframe ?? chartConfig.charts.main.interval);
   const topHaInterval =
     maximizedChart === "ha-top"
-      ? (singleTimeframe ?? (selectedTimeframe ?? "15m"))
-      : (selectedTimeframe ?? "15m");
+      ? (singleTimeframe ?? (selectedTimeframe ?? chartConfig.charts.haTop.interval))
+      : (selectedTimeframe ?? chartConfig.charts.haTop.interval);
   const haBottomInterval =
     maximizedChart === "ha-bottom"
-      ? (singleTimeframe ?? "3m")
-      : "3m";
+      ? (singleTimeframe ?? chartConfig.charts.haBottom.interval)
+      : chartConfig.charts.haBottom.interval;
 
   const isSynchronized = selectedTimeframe !== null && maximizedChart === null;
 
@@ -888,9 +895,11 @@ export default function Page() {
             key={`raw-${symbol}-${rawInterval}-${isSynchronized}`}
             symbol={symbol}
             interval={rawInterval}
+            heikin={chartConfig.charts.main.heikin}
             emas={ALL_EMAS}
+            defaultEmaOff={getEmaOff(chartConfig.charts.main.emas)}
             allowFootprint={true}
-            defaultFootprintEnabled={true}
+            defaultFootprintEnabled={chartConfig.charts.main.delta}
             allowHtfEma={true}
             htfEnabled={htfEnabled}
             onHtfEnabledChange={handleHtfEnabledChange}
@@ -928,8 +937,9 @@ export default function Page() {
             key={`ha-top-${symbol}-${topHaInterval}-${isSynchronized}`}
             symbol={symbol}
             interval={topHaInterval}
-            heikin
+            heikin={chartConfig.charts.haTop.heikin}
             emas={ALL_EMAS}
+            defaultEmaOff={getEmaOff(chartConfig.charts.haTop.emas)}
             allowFootprint={false}
             defaultFootprintEnabled={false}
             levelsEnabled={levelsEnabledHaTop}
@@ -962,8 +972,9 @@ export default function Page() {
             key={`ha-bottom-${symbol}-${haBottomInterval}`}
             symbol={symbol}
             interval={haBottomInterval}
-            heikin
+            heikin={chartConfig.charts.haBottom.heikin}
             emas={ALL_EMAS}
+            defaultEmaOff={getEmaOff(chartConfig.charts.haBottom.emas)}
             allowFootprint={false}
             defaultFootprintEnabled={false}
             levelsEnabled={levelsEnabledHaBottom}
