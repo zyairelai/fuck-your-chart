@@ -9,7 +9,8 @@
     "weekly": true,
     "monday": false,
     "pdhlm": true,
-    "25/75": false
+    "25/75": false,
+    "p4hl": false
   },
   "charts": {
     "chart1": {

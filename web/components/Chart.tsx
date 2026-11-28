@@ -385,10 +385,11 @@ function makeTickFormatter(tz: TzOffset): (t: Time) => string {
 }
 
 export interface Zones {
-  prevWeek: { high: number; low: number } | null;
+  prevWeek: { high: number; low: number; mid?: number } | null;
   monday: { high: number; low: number } | null;
   prevDay: { high: number; low: number; mid: number; p25: number; p75: number } | null;
   weekend: { high: number; low: number; mid: number } | null;
+  p4hl?: { high: number; low: number } | null;
 }
 
 export interface LineToggles {
@@ -397,6 +398,7 @@ export interface LineToggles {
   pdhlm: boolean;
   fibb: boolean;
   weekend: boolean;
+  p4hl?: boolean;
 }
 
 export type CustomLevelColor = "red" | "yellow" | "green";
@@ -1608,19 +1610,32 @@ export default function Chart({
     }
     emaRefs.current = refs;
 
-    const savedBars = getHistory(interval);
-    if (savedBars.length > 0) {
-      const built = heikin ? heikinSeriesAndAnchor(savedBars) : null;
-      const series = built?.series ?? savedBars;
+    const savedBars = getHistory(interval, symbol);
+    const barStepSec = (() => {
+      const m = /^(\d+)([mhdw])$/i.exec(interval);
+      if (!m) return 60;
+      const n = Number(m[1]);
+      const u = m[2]!.toLowerCase();
+      if (u === "m") return n * 60;
+      if (u === "h") return n * 3600;
+      if (u === "d") return n * 86400;
+      return n * 604800;
+    })();
+    const lastSaved = savedBars[savedBars.length - 1];
+    const isSavedFresh = Boolean(lastSaved && (Math.floor(Date.now() / 1000) - lastSaved.time <= barStepSec * 3));
+    if (savedBars.length > 0 && isSavedFresh) {
+      const recentSaved = savedBars.slice(-300);
+      const built = heikin ? heikinSeriesAndAnchor(recentSaved) : null;
+      const series = built?.series ?? recentSaved;
       const lastClosed = built?.lastClosed ?? null;
       lastClosedHaRef.current = lastClosed;
       lastHaRef.current = lastClosed;
-      cacheRef.current = savedBars.slice();
+      cacheRef.current = recentSaved.slice();
       displayCacheRef.current = series;
-      rebuildHoverData(savedBars, series);
+      rebuildHoverData(recentSaved, series);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       candle.setData(series as any);
-      deltaRef.current?.setData(savedBars.map((bar) => {
+      deltaRef.current?.setData(recentSaved.map((bar) => {
         const value = candleDelta(bar);
         return {
           time: bar.time as Time,
@@ -1632,7 +1647,7 @@ export default function Chart({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       futureRef.current?.setData(futureWhitespace(lastBar.time, interval) as any);
       if (!heikin) setTabTitle(lastBar.close);
-      recomputeEmas(savedBars);
+      recomputeEmas(recentSaved);
       paintLatestOhlc();
       updateClosePriceLine();
       requestAnimationFrame(() => applyDefaultView());
@@ -2085,7 +2100,10 @@ export default function Chart({
       WM: "Weekend Mid",
       WL: "Weekend Low",
       PWH: "Previous Week High",
+      PWM: "Previous Week Mid",
       PWL: "Previous Week Low",
+      P4H: "Previous 4H High",
+      P4L: "Previous 4H Low",
     };
 
     const add = (
@@ -2113,6 +2131,8 @@ export default function Chart({
     if (zones) {
       if (lineToggles.weekly && zones.prevWeek) {
         add(zones.prevWeek.high, "#ce93d8", 2.5, LineStyle.Solid, "PWH");
+        const pwMid = zones.prevWeek.mid ?? (zones.prevWeek.high + zones.prevWeek.low) / 2;
+        add(pwMid, "rgba(206, 147, 216, 0.85)", 2, LineStyle.Dashed, "PWM");
         add(zones.prevWeek.low, "#ce93d8", 2.5, LineStyle.Solid, "PWL");
       }
       if (lineToggles.monday && zones.monday) {
@@ -2129,9 +2149,13 @@ export default function Chart({
         add(zones.prevDay.p25, "#ffeb3b", 2, LineStyle.Dotted, "25%");
       }
       if (lineToggles.weekend && zones.weekend) {
-        add(zones.weekend.high, "#42a5f5", 2, LineStyle.Solid, "WH");
-        add(zones.weekend.mid, "rgba(66, 165, 245, 0.85)", 2, LineStyle.Dashed, "WM");
-        add(zones.weekend.low, "#42a5f5", 2, LineStyle.Solid, "WL");
+        add(zones.weekend.high, "#ffffff", 2.5, LineStyle.Solid, "WH");
+        add(zones.weekend.mid, "rgba(255,255,255,0.85)", 2, LineStyle.Dashed, "WM");
+        add(zones.weekend.low, "#ffffff", 2.5, LineStyle.Solid, "WL");
+      }
+      if (lineToggles.p4hl && zones.p4hl) {
+        add(zones.p4hl.high, "#ff9800", 2, LineStyle.Solid, "P4H");
+        add(zones.p4hl.low, "#ff9800", 2, LineStyle.Solid, "P4L");
       }
     }
     for (let i = 0; i < customLevels.length; i++) {
@@ -2159,7 +2183,7 @@ export default function Chart({
     const loadInitial = async () => {
       try {
         setStatus("connecting");
-        const snapshot = await fetchLatestKlines(interval, 500, symbol);
+        const snapshot = await fetchLatestKlines(interval, 300, symbol);
         if (cancelled || !candleRef.current || snapshot.length === 0) return;
 
         const clean = cleanAndSort(snapshot);

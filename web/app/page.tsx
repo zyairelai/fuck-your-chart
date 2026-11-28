@@ -85,6 +85,7 @@ const DEFAULT_TOGGLES: LineToggles = {
   pdhlm: Boolean(chartConfig.levels.pdhlm),
   fibb: Boolean(chartConfig.levels["25/75"]),
   weekend: Boolean(chartConfig.levels.weekend),
+  p4hl: Boolean(chartConfig.levels.p4hl),
 };
 
 const STORAGE_KEY_TOGGLES = "fuck-your-chart:line-toggles:v1";
@@ -94,14 +95,23 @@ function getLocalToggles(): LineToggles | null {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY_TOGGLES);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as LineToggles;
+    const parsed = JSON.parse(raw) as Partial<LineToggles>;
     if (
       typeof parsed.weekly === "boolean" &&
       typeof parsed.monday === "boolean" &&
       typeof parsed.pdhlm === "boolean" &&
       typeof parsed.fibb === "boolean" &&
       typeof parsed.weekend === "boolean"
-    ) return parsed;
+    ) {
+      return {
+        weekly: parsed.weekly,
+        monday: parsed.monday,
+        pdhlm: parsed.pdhlm,
+        fibb: parsed.fibb,
+        weekend: parsed.weekend,
+        p4hl: typeof parsed.p4hl === "boolean" ? parsed.p4hl : DEFAULT_TOGGLES.p4hl,
+      };
+    }
   } catch {}
   return null;
 }
@@ -119,7 +129,8 @@ function areTogglesEqual(a: LineToggles, b: LineToggles): boolean {
     a.monday === b.monday &&
     a.pdhlm === b.pdhlm &&
     a.fibb === b.fibb &&
-    a.weekend === b.weekend
+    a.weekend === b.weekend &&
+    Boolean(a.p4hl) === Boolean(b.p4hl)
   );
 }
 

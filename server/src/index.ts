@@ -70,6 +70,7 @@ interface LineToggles {
   pdhlm: boolean;
   fibb: boolean;
   weekend: boolean;
+  p4hl: boolean;
 }
 
 function loadDefaultLineToggles(): LineToggles {
@@ -79,6 +80,7 @@ function loadDefaultLineToggles(): LineToggles {
     pdhlm: true,
     fibb: false,
     weekend: false,
+    p4hl: false,
   };
   for (const candidate of [
     path.resolve(__dirname, "..", "chart.config.json"),
@@ -94,6 +96,7 @@ function loadDefaultLineToggles(): LineToggles {
           pdhlm: typeof parsed.levels.pdhlm === "boolean" ? parsed.levels.pdhlm : fallback.pdhlm,
           fibb: typeof parsed.levels["25/75"] === "boolean" ? parsed.levels["25/75"] : fallback.fibb,
           weekend: typeof parsed.levels.weekend === "boolean" ? parsed.levels.weekend : fallback.weekend,
+          p4hl: typeof parsed.levels.p4hl === "boolean" ? parsed.levels.p4hl : fallback.p4hl,
         };
       }
     } catch {
@@ -105,16 +108,26 @@ function loadDefaultLineToggles(): LineToggles {
 
 const DEFAULT_LINE_TOGGLES: LineToggles = loadDefaultLineToggles();
 
-function isLineToggles(v: unknown): v is LineToggles {
-  if (!v || typeof v !== "object") return false;
+function normalizeLineToggles(v: unknown): LineToggles | null {
+  if (!v || typeof v !== "object") return null;
   const o = v as Record<string, unknown>;
-  return (
-    typeof o.weekly === "boolean" &&
-    typeof o.monday === "boolean" &&
-    typeof o.pdhlm === "boolean" &&
-    typeof o.fibb === "boolean" &&
-    typeof o.weekend === "boolean"
-  );
+  if (
+    typeof o.weekly !== "boolean" ||
+    typeof o.monday !== "boolean" ||
+    typeof o.pdhlm !== "boolean" ||
+    typeof o.fibb !== "boolean" ||
+    typeof o.weekend !== "boolean"
+  ) {
+    return null;
+  }
+  return {
+    weekly: o.weekly,
+    monday: o.monday,
+    pdhlm: o.pdhlm,
+    fibb: o.fibb,
+    weekend: o.weekend,
+    p4hl: typeof o.p4hl === "boolean" ? o.p4hl : DEFAULT_LINE_TOGGLES.p4hl,
+  };
 }
 
 function loadSettings(): LineToggles {
@@ -122,7 +135,8 @@ function loadSettings(): LineToggles {
     mkdirSync(DATA_DIR, { recursive: true });
     const raw = readFileSync(SETTINGS_FILE, "utf8");
     const parsed: unknown = JSON.parse(raw);
-    if (isLineToggles(parsed)) return parsed;
+    const normalized = normalizeLineToggles(parsed);
+    if (normalized) return normalized;
   } catch {
     // File missing or corrupt — start fresh
   }
@@ -159,12 +173,12 @@ app.get("/api/settings", (_req, res) => {
 });
 
 app.put("/api/settings", (req, res) => {
-  const body: unknown = req.body;
-  if (!isLineToggles(body)) {
+  const normalized = normalizeLineToggles(req.body);
+  if (!normalized) {
     res.status(400).json({ error: "body must be a valid LineToggles object" });
     return;
   }
-  lineToggles = { ...body };
+  lineToggles = normalized;
   saveSettings(lineToggles);
   res.json({ lineToggles });
 });
@@ -245,6 +259,10 @@ app.delete("/api/custom-levels", (req, res) => {
   res.json({ customLevels });
 });
 
+// Short-TTL in-memory cache + in-flight dedup for /api/klines/:interval so rapid TF switches are instant
+const klineCache = new Map<string, { bars: Awaited<ReturnType<typeof klinesFutures>>; expiresAt: number }>();
+const klineInFlight = new Map<string, Promise<Awaited<ReturnType<typeof klinesFutures>>>>();
+
 /** Paginated candles for initial load and polling. */
 app.get("/api/klines/:interval", async (req, res) => {
   try {
@@ -256,7 +274,31 @@ app.get("/api/klines/:interval", async (req, res) => {
     const symbol = String(req.query.symbol || SYMBOL).toLowerCase();
     const endTime = req.query.endTime != null ? Number(req.query.endTime) : undefined;
     const limit = Math.min(Number(req.query.limit) || 1000, 1000);
-    const bars = await klinesFutures(symbol, interval, limit, endTime);
+
+    if (endTime != null) {
+      const bars = await klinesFutures(symbol, interval, limit, endTime);
+      res.json(bars);
+      return;
+    }
+
+    const cacheKey = `${symbol}:${interval}:${limit}`;
+    const now = Date.now();
+    const cached = klineCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      res.json(cached.bars);
+      return;
+    }
+
+    let pending = klineInFlight.get(cacheKey);
+    if (!pending) {
+      pending = klinesFutures(symbol, interval, limit).finally(() => {
+        klineInFlight.delete(cacheKey);
+      });
+      klineInFlight.set(cacheKey, pending);
+    }
+    const bars = await pending;
+    const ttlMs = limit <= 25 ? 1_500 : 10_000;
+    klineCache.set(cacheKey, { bars, expiresAt: Date.now() + ttlMs });
     res.json(bars);
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -278,6 +320,27 @@ function barAt(bars: { time: number; high: number; low: number }[], openSec: num
 }
 
 /**
+ * Compute Previous 4H High/Low (P4HL) using closed candles & Mother Bar loop:
+ * Ignore index [-1] (forming/unclosed 4H candle), start at [-2], and walk
+ * backwards while [i-1] completely engulfs [i].
+ */
+function computeP4hl(bars4h: { high: number; low: number }[]): { high: number; low: number } | null {
+  if (bars4h.length < 2) return null;
+  let idx = bars4h.length - 2;
+  while (idx > 0) {
+    const curr = bars4h[idx]!;
+    const prev = bars4h[idx - 1]!;
+    if (prev.high >= curr.high && prev.low <= curr.low) {
+      idx -= 1;
+    } else {
+      break;
+    }
+  }
+  const mother = bars4h[idx]!;
+  return { high: mother.high, low: mother.low };
+}
+
+/**
  * GET /api/zones/:date
  * Calendar date reference day for drawing horizontal levels.
  */
@@ -294,9 +357,10 @@ app.get("/api/zones/:date", async (req, res) => {
     const todayOpenSec = Math.floor(todayOpenMs / 1000);
     const endMs = Date.UTC(y, m - 1, d, 23, 59, 59, 999);
 
-    const [daily, weekly] = await Promise.all([
+    const [daily, weekly, fourHour] = await Promise.all([
       klinesFutures(symbol, "1d", 20, endMs),
       klinesFutures(symbol, "1w", 8, endMs),
+      klinesFutures(symbol, "4h", 50, endMs),
     ]);
 
     const refDow = new Date(todayOpenMs).getUTCDay(); // 0=Sun, 1=Mon, 5=Fri
@@ -321,9 +385,13 @@ app.get("/api/zones/:date", async (req, res) => {
     }
 
     const prevWeekSrc = barAt(weekly, weekStartSec - 7 * 86400);
-    const prevWeek = prevWeekSrc ? { high: prevWeekSrc.high, low: prevWeekSrc.low } : null;
+    const prevWeek = prevWeekSrc
+      ? { high: prevWeekSrc.high, low: prevWeekSrc.low, mid: (prevWeekSrc.high + prevWeekSrc.low) / 2 }
+      : null;
 
-    res.json({ date: dateStr, prevWeek, monday, prevDay, weekend });
+    const p4hl = computeP4hl(fourHour);
+
+    res.json({ date: dateStr, prevWeek, monday, prevDay, weekend, p4hl });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }

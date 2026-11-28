@@ -332,7 +332,7 @@ export default function TopBar({
         <button
           type="button"
           className={`toggle-btn${toggles.weekend ? " active" : ""}`}
-          title="Previous weekend high / low (blue) and mid (dashed)"
+          title="Previous weekend high / low (white) and mid (dashed)"
           onClick={() => onToggle("weekend")}
         >
           Weekend
@@ -340,10 +340,10 @@ export default function TopBar({
         <button
           type="button"
           className={`toggle-btn${toggles.weekly ? " active" : ""}`}
-          title="Previous week high / low (purple)"
+          title="Previous week high / low (purple) and mid (dashed)"
           onClick={() => onToggle("weekly")}
         >
-          Weekly
+          PWHLM
         </button>
         <button
           type="button"
@@ -368,6 +368,14 @@ export default function TopBar({
           onClick={() => onToggle("fibb")}
         >
           25% / 75%
+        </button>
+        <button
+          type="button"
+          className={`toggle-btn${toggles.p4hl ? " active" : ""}`}
+          title="Previous closed 4H Mother Bar high / low (orange)"
+          onClick={() => onToggle("p4hl")}
+        >
+          P4HL
         </button>
       </div>
 

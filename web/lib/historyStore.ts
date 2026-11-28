@@ -87,17 +87,27 @@ function bucket(interval: string, symbol = "BTCUSDT"): Bucket {
   return b;
 }
 
+const persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
 function persist(interval: string, bars: Kline[], symbol = "BTCUSDT") {
   if (typeof window === "undefined") return;
   const key = makeBucketKey(interval, symbol);
-  try {
-    window.localStorage.setItem(
-      `${STORAGE_PREFIX}${key}`,
-      JSON.stringify(bars.slice(-PERSISTED_BAR_LIMIT)),
-    );
-  } catch (err) {
-    console.warn(`[history] could not save ${key} candles:`, err);
-  }
+  const prevTimer = persistTimers.get(key);
+  if (prevTimer) clearTimeout(prevTimer);
+  persistTimers.set(
+    key,
+    setTimeout(() => {
+      persistTimers.delete(key);
+      try {
+        window.localStorage.setItem(
+          `${STORAGE_PREFIX}${key}`,
+          JSON.stringify(bars.slice(-PERSISTED_BAR_LIMIT)),
+        );
+      } catch (err) {
+        console.warn(`[history] could not save ${key} candles:`, err);
+      }
+    }, 400),
+  );
 }
 
 function notify(interval: string, ev: HistoryEvent, symbol = "BTCUSDT") {
@@ -116,10 +126,19 @@ export function getHistory(interval: string, symbol = "BTCUSDT"): Kline[] {
 
 export function seedHistory(interval: string, bars: Kline[], symbol = "BTCUSDT") {
   const b = bucket(interval, symbol);
-  const map = new Map<number, Kline>();
-  for (const bar of b.bars) map.set(bar.time, bar);
-  for (const bar of bars) map.set(bar.time, bar);
-  b.bars = cleanAndSort([...map.values()]);
+  if (bars.length === 0) return;
+  const firstNew = bars[0]!.time;
+  const lastOld = b.bars[b.bars.length - 1]?.time ?? 0;
+  const step = bars.length >= 2 ? bars[bars.length - 1]!.time - bars[bars.length - 2]!.time : 0;
+  // If cached bars are disconnected/stale (gap > 5 candles before new snapshot), discard stale bars
+  if (b.bars.length > 0 && step > 0 && firstNew - lastOld > step * 5) {
+    b.bars = cleanAndSort(bars);
+  } else {
+    const map = new Map<number, Kline>();
+    for (const bar of b.bars) map.set(bar.time, bar);
+    for (const bar of bars) map.set(bar.time, bar);
+    b.bars = cleanAndSort([...map.values()]);
+  }
   b.exhausted = false;
   persist(interval, b.bars, symbol);
 }
@@ -199,7 +218,10 @@ export async function fetchLatestKlines(interval: string, limit = 20, symbol = "
   const pullPromise = (async () => {
     try {
       try {
-        const res = await fetch(`/api/klines/${encodeURIComponent(interval)}?symbol=${encodeURIComponent(symbol)}&limit=${limit}`);
+        const res = await fetch(
+          `/api/klines/${encodeURIComponent(interval)}?symbol=${encodeURIComponent(symbol)}&limit=${limit}`,
+          { signal: AbortSignal.timeout(4000) },
+        );
         if (res.ok) {
           const raw = (await res.json()) as Kline[];
           return raw.map((k) => ({
@@ -248,7 +270,10 @@ export async function pullAuthoritativeKlines(interval: string, limit = 200, sym
     try {
       let authoritative: Kline[] = [];
       try {
-        const res = await fetch(`/api/klines/${encodeURIComponent(interval)}?symbol=${encodeURIComponent(symbol)}&limit=${limit}`);
+        const res = await fetch(
+          `/api/klines/${encodeURIComponent(interval)}?symbol=${encodeURIComponent(symbol)}&limit=${limit}`,
+          { signal: AbortSignal.timeout(4000) },
+        );
         if (res.ok) {
           authoritative = (await res.json()) as Kline[];
         }
