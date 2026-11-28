@@ -412,12 +412,12 @@ export interface CustomLevel {
   color: CustomLevelColor;
 }
 
-export type LinkedCrosshairId = "raw" | "heikin";
+export type LinkedCrosshairId = "raw" | "heikin" | "heikin-bottom";
 export type LinkedCrosshairSync = (time: number | null) => void;
 
 // ---- HTF (Higher-Timeframe) EMA types & config ----
-// 4 individual toggles: 5m150, 15m200, 1h200, 4h200.
-export type HtfEmaKey = "5m150" | "15m200" | "1h200" | "4h200";
+// 3 individual toggles: 15m200, 1h200, 4h200.
+export type HtfEmaKey = "15m200" | "1h200" | "4h200";
 export type HtfInterval = "5m" | "15m" | "1h" | "4h";
 export interface HtfEmaConfig {
   key: HtfEmaKey;
@@ -427,7 +427,6 @@ export interface HtfEmaConfig {
   label: string;
 }
 export const HTF_EMA_CONFIGS: HtfEmaConfig[] = [
-  { key: "5m150", interval: "5m", period: 150, color: "#26c6da", label: "5m" },
   { key: "15m200", interval: "15m", period: 200, color: "#42a5f5", label: "15m" },
   { key: "1h200", interval: "1h", period: 200, color: "#ab47bc", label: "1h" },
   { key: "4h200", interval: "4h", period: 200, color: "#ef5350", label: "4h" },
@@ -435,7 +434,6 @@ export const HTF_EMA_CONFIGS: HtfEmaConfig[] = [
 export const HTF_INTERVAL_STEP: Record<HtfInterval, number> = { "5m": 300, "15m": 900, "1h": 3600, "4h": 14400 };
 
 export const makeHtfEnabledDefault = (): Record<HtfEmaKey, boolean> => ({
-  "5m150": false,
   "15m200": false,
   "1h200": false,
   "4h200": false,
@@ -1679,7 +1677,10 @@ export default function Chart({
     const onCrosshair = (p: MouseEventParams) => {
       const time = p.time == null ? null : (p.time as number);
       updateHoverAtTime(time);
-      if (p.point != null && linkedCrosshairActiveRef.current) {
+      // Restore this chart's own crosshair only when the user genuinely moves
+      // their OWN mouse — not when setCrosshairPosition (from a sibling sync)
+      // triggers this handler (suppressLinkedCrosshairRef is true in that case).
+      if (p.point != null && linkedCrosshairActiveRef.current && !suppressLinkedCrosshairRef.current) {
         linkedCrosshairActiveRef.current = false;
         chart.applyOptions({
           crosshair: {
@@ -2375,37 +2376,6 @@ export default function Chart({
         className="chart-canvas"
         style={{ width: "100%", height: "100%", cursor: "crosshair" }}
       />
-      {/* Maximize / 1 layout mode toggle button */}
-      <button
-        type="button"
-        className={`chart-maximize-btn${isMaximized ? " active" : ""}`}
-        style={{
-          bottom: allowFootprint && footprintEnabled ? "64px" : "32px",
-          left: "10px",
-        }}
-        title={isMaximized ? "Exit 1 layout mode (or double click chart)" : "Maximize chart (1 layout mode)"}
-        aria-label={isMaximized ? "Exit 1 layout mode" : "Maximize chart"}
-        onClick={(e) => {
-          e.stopPropagation();
-          onToggleMaximize?.();
-        }}
-      >
-        {isMaximized ? (
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4 14h6v6" />
-            <path d="M20 10h-6V4" />
-            <path d="M14 10l7-7" />
-            <path d="M10 14l-7 7" />
-          </svg>
-        ) : (
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M15 3h6v6" />
-            <path d="M9 21H3v-6" />
-            <path d="M21 3l-7 7" />
-            <path d="M3 21l7-7" />
-          </svg>
-        )}
-      </button>
       {copyToast && (
         <div className="copy-toast" role="status">
           <span className="copy-toast-icon">✓</span>

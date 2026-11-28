@@ -16,20 +16,19 @@ const STORAGE_KEY_HTF_EMA = "fuck-your-chart:htf-ema:v1";
 
 function getLocalHtfEma(): Record<HtfEmaKey, boolean> {
   if (typeof window === "undefined") {
-    return { "5m150": false, "15m200": false, "1h200": false, "4h200": false };
+    return { "15m200": false, "1h200": false, "4h200": false };
   }
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY_HTF_EMA);
-    if (!raw) return { "5m150": false, "15m200": false, "1h200": false, "4h200": false };
+    if (!raw) return { "15m200": false, "1h200": false, "4h200": false };
     const parsed = JSON.parse(raw);
     return {
-      "5m150": Boolean(parsed["5m150"]),
       "15m200": Boolean(parsed["15m200"]),
       "1h200": Boolean(parsed["1h200"]),
       "4h200": Boolean(parsed["4h200"]),
     };
   } catch {
-    return { "5m150": false, "15m200": false, "1h200": false, "4h200": false };
+    return { "15m200": false, "1h200": false, "4h200": false };
   }
 }
 
@@ -238,6 +237,9 @@ export default function Page() {
   const maximizedChartRef = useRef(maximizedChart);
   maximizedChartRef.current = maximizedChart;
 
+  // 2-layout mode: 15m HA expands to cover the 3m slot (double-click on ha-top)
+  const [haTopExpanded, setHaTopExpanded] = useState(false);
+
   const rawScreenshotRef = useRef<(() => HTMLCanvasElement | null) | null>(null);
   const haTopScreenshotRef = useRef<(() => HTMLCanvasElement | null) | null>(null);
   const haBottomScreenshotRef = useRef<(() => HTMLCanvasElement | null) | null>(null);
@@ -247,6 +249,7 @@ export default function Page() {
   const linkedCrosshairSync = useRef<Record<LinkedCrosshairId, LinkedCrosshairSync | null>>({
     raw: null,
     heikin: null,
+    "heikin-bottom": null,
   });
 
   /** Imperative handles so each chart can trigger resetView() on its sibling. */
@@ -265,15 +268,17 @@ export default function Page() {
     linkedCrosshairSync.current[id] = sync;
   };
   const syncLinkedCrosshair = (source: LinkedCrosshairId, time: number | null) => {
-    const target = source === "raw" ? "heikin" : "raw";
-    linkedCrosshairSync.current[target]?.(time);
+    // Broadcast to every chart except the source
+    for (const [id, fn] of Object.entries(linkedCrosshairSync.current) as [LinkedCrosshairId, LinkedCrosshairSync | null][]) {
+      if (id !== source) fn?.(time);
+    }
   };
 
   const handleTimeframeChange = (tf: string | null) => {
     linkedTimeScales.current = [];
-    linkedCrosshairSync.current = { raw: null, heikin: null };
+    linkedCrosshairSync.current = { raw: null, heikin: null, "heikin-bottom": null };
     // Reset HTF EMA chips to off whenever the timeframe changes.
-    const allOff: Record<HtfEmaKey, boolean> = { "5m150": false, "15m200": false, "1h200": false, "4h200": false };
+    const allOff: Record<HtfEmaKey, boolean> = { "15m200": false, "1h200": false, "4h200": false };
     setHtfEnabled(allOff);
     setLocalHtfEma(allOff);
     if (maximizedChart !== null) {
@@ -291,13 +296,20 @@ export default function Page() {
     return () => clearTimeout(timer);
   }, [maximizedChart]);
 
+  // Also resize when 2-layout (ha-top expanded) changes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      window.dispatchEvent(new Event("resize"));
+    }, 40);
+    return () => clearTimeout(timer);
+  }, [haTopExpanded]);
+
+  // handleToggleMaximize kept for compatibility (no longer called from buttons, but harmless)
   const handleToggleMaximize = (chartId: "main" | "ha-top" | "ha-bottom") => {
     if (maximizedChart === chartId) {
-      // Exit 1 layout mode -> back to 3 layout default mode
       setMaximizedChart(null);
       setSingleTimeframe(null);
     } else {
-      // Enter 1 layout mode for this chart
       setMaximizedChart(chartId);
       const currentInterval =
         chartId === "main"
@@ -310,14 +322,14 @@ export default function Page() {
   };
 
   const handleChartDoubleClick = (chartId: "main" | "ha-top" | "ha-bottom") => {
-    if (maximizedChartRef.current !== null) {
-      // In 1 layout mode: double click exits back to 3 layout default mode!
-      setMaximizedChart(null);
-      setSingleTimeframe(null);
-    } else {
-      // In 3 layout mode: previous toggle layout behavior
+    if (chartId === "ha-bottom") return; // 3m — do nothing
+    if (chartId === "main") {
+      // 5m: toggle side-by-side layout
       toggleLayout();
+      return;
     }
+    // ha-top: toggle 2-layout (expand to cover 3m slot)
+    setHaTopExpanded((prev) => !prev);
   };
   const [tz, setTz] = useState<TzOffset>(8);
   const [switchedLayout, setSwitchedLayout] = useState(false);
@@ -325,7 +337,6 @@ export default function Page() {
   const [levelsEnabledHaTop, setLevelsEnabledHaTop] = useState(false);
   const [levelsEnabledHaBottom, setLevelsEnabledHaBottom] = useState(true);
   const [htfEnabled, setHtfEnabled] = useState<Record<HtfEmaKey, boolean>>({
-    "5m150": false,
     "15m200": false,
     "1h200": false,
     "4h200": false,
@@ -867,7 +878,7 @@ export default function Page() {
         onToggleBeep5m={toggleBeep5m}
         onTakeScreenshot={handleTakeScreenshot}
       />
-      <main className={`page${switchedLayout ? " switched" : ""}${maximizedChart ? ` maximized-${maximizedChart}` : ""}`}>
+      <main className={`page${switchedLayout ? " switched" : ""}${maximizedChart ? ` maximized-${maximizedChart}` : ""}${haTopExpanded ? " ha-top-expanded" : ""}`}>
         <div className="cell chart-main">
           <Chart
             key={`raw-${symbol}-${rawInterval}-${isSynchronized}`}
@@ -893,9 +904,9 @@ export default function Page() {
             onRegisterScreenshot={(fn) => { rawScreenshotRef.current = fn; }}
             registerTimeScale={isSynchronized ? registerLinkedTime : undefined}
             siblingScales={isSynchronized ? linkedTimeScales : undefined}
-            linkedCrosshairId={isSynchronized ? "raw" : undefined}
-            registerLinkedCrosshair={isSynchronized ? registerLinkedCrosshair : undefined}
-            onLinkedCrosshair={isSynchronized ? syncLinkedCrosshair : undefined}
+            linkedCrosshairId="raw"
+            registerLinkedCrosshair={registerLinkedCrosshair}
+            onLinkedCrosshair={syncLinkedCrosshair}
             registerResetView={(fn) => { rawResetViewRef.current = fn; }}
             onResetView={isSynchronized ? () => { haTopResetViewRef.current?.(); } : undefined}
             emaAlerts={selectedTimeframe === null ? alertState.emas.filter((a) => a.chartId === "main") : undefined}
@@ -931,9 +942,9 @@ export default function Page() {
             onRegisterScreenshot={(fn) => { haTopScreenshotRef.current = fn; }}
             registerTimeScale={isSynchronized ? registerLinkedTime : undefined}
             siblingScales={isSynchronized ? linkedTimeScales : undefined}
-            linkedCrosshairId={isSynchronized ? "heikin" : undefined}
-            registerLinkedCrosshair={isSynchronized ? registerLinkedCrosshair : undefined}
-            onLinkedCrosshair={isSynchronized ? syncLinkedCrosshair : undefined}
+            linkedCrosshairId="heikin"
+            registerLinkedCrosshair={registerLinkedCrosshair}
+            onLinkedCrosshair={syncLinkedCrosshair}
             registerResetView={(fn) => { haTopResetViewRef.current = fn; }}
             onResetView={isSynchronized ? () => { rawResetViewRef.current?.(); } : undefined}
             emaAlerts={selectedTimeframe === null ? alertState.emas.filter((a) => a.chartId === "ha-top") : undefined}
@@ -963,6 +974,9 @@ export default function Page() {
             isMaximized={maximizedChart === "ha-bottom"}
             onToggleMaximize={() => handleToggleMaximize("ha-bottom")}
             onRegisterScreenshot={(fn) => { haBottomScreenshotRef.current = fn; }}
+            linkedCrosshairId="heikin-bottom"
+            registerLinkedCrosshair={registerLinkedCrosshair}
+            onLinkedCrosshair={syncLinkedCrosshair}
             emaAlerts={selectedTimeframe === null ? alertState.emas.filter((a) => a.chartId === "ha-bottom") : undefined}
             onSetEmaAlert={selectedTimeframe === null ? (period) => handleSetEmaAlert("ha-bottom", haBottomInterval, period) : undefined}
             onCancelEmaAlert={selectedTimeframe === null ? (period) => handleCancelEmaAlert("ha-bottom", period) : undefined}
